@@ -191,6 +191,8 @@ typedef struct {
     int error_code;
 } SecureConn;
 
+SecureConn * secure_conn_new();
+
 int sc_dial(SSL_CTX *ssl_ctx, const char *host, const char *port, SecureConn *sc);
 
 int sc_read(SecureConn *conn, char * data, size_t size_len);
@@ -209,6 +211,7 @@ void sc_free(SecureConn *sc);
 
 #define HTTP_STATUS_OK                              "200"
 #define HTTP_STATUS_PARTIAL_CONTENT                 "206"
+#define HTTP_STATUS_BAD_REQUEST                     "400"
 #define HTTP_STATUS_NOT_FOUND                       "404"
 #define HTTP_STATUS_TOO_MANY_REQUESTS               "429"
 #define HTTP_STATUS_INTERNAL                        "500"
@@ -219,6 +222,7 @@ void sc_free(SecureConn *sc);
 #define HTTP_HEADER_RANGE                           "Range"
 #define HTTP_HEADER_DATE                            "Date"
 #define HTTP_HEADER_CONTENT_LENGTH                  "Content-Length"
+#define HTTP_HEADER_CONTENT_LENGTH_LC               "content-length"
 #define HTTP_HEADER_CONTENT_TYPE                    "Content-Type"
 #define HTTP_HEADER_AUTHORIZATION                   "Authorization"
 #define HTTP_HEADER_ACCEPT_RANGES                   "Accept-Ranges"
@@ -229,6 +233,7 @@ void sc_free(SecureConn *sc);
 
 #define HTTP_METHOD_GET                             "GET"
 #define HTTP_METHOD_DELETE                          "DELETE"
+#define HTTP_METHOD_PUT                             "PUT"
 
 #define HTTP_VERSION_LENGTH                         8
 #define HTTP_METHOD_MAX_LENGTH                      10
@@ -242,6 +247,7 @@ void sc_free(SecureConn *sc);
     char* token3;\
 
 #define HTTP_OBJECT_FIELDS \
+    bool has_content_length;\
     size_t content_length;\
     char* payload_hash;\
     Map *queries;\
@@ -573,6 +579,11 @@ typedef struct {
     size_t bytes_total;
     size_t file_offset;
     SSL *ssl;
+
+    bool has_content_length;
+    size_t uploaded_bytes_count;
+    uv_fs_t *upload_dst_open_req;
+    uv_file upload_dst;
 
 } HTTPContext;
 

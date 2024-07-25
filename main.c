@@ -1,4 +1,5 @@
 #include "include/fsnode.h"
+#include <ctype.h>
 
 /*
  * ###################
@@ -733,6 +734,13 @@ char *certificate_sign_request_to_bytes(X509_REQ *x509_req, size_t *len) {
  * ###################
  */
 
+ SecureConn * secure_conn_new() {
+     SecureConn *sc = (SecureConn *) malloc(sizeof(SecureConn));
+     if (sc == NULL) return NULL;
+     sc->bio = NULL;
+     sc->ssl = NULL;
+     return sc;
+ }
 /**
  * @brief Establishes a secure TCP connection using SSL/TLS.
  *
@@ -759,29 +767,24 @@ int sc_dial(SSL_CTX *ssl_ctx, const char *host, const char *port, SecureConn *sc
     }
 
     if (BIO_get_ssl(sc->bio, &sc->ssl) != 1 || sc->ssl == NULL) {
-        sc_free(sc);
         return SC_TLS_INIT_ERROR;
     }
 
     SSL_set_mode(sc->ssl, SSL_MODE_AUTO_RETRY);
 
     if (BIO_set_conn_hostname(sc->bio, host) != 1) {
-        sc_free(sc);
         return SC_TLS_INIT_ERROR;
     }
 
     if (BIO_set_conn_port(sc->bio, port) != 1) {
-        sc_free(sc);
         return SC_TLS_INIT_ERROR;
     }
 
     if (BIO_do_connect(sc->bio) <= 0) {
-        sc_free(sc);
         return SC_TLS_CONNECT_ERROR;
     }
 
     if (BIO_do_handshake(sc->bio) <= 0) {
-        sc_free(sc);
         return SC_TLS_HANDSHAKE_ERROR;
     }
 
@@ -916,6 +919,8 @@ HTTPObject *http_new_object() {
         }
 
         r->payload_hash = NULL;
+        r->has_content_length = false;
+        r->content_length = 0;
 
         http_set_request_version(r, strdup(HTTP_VERSION_1_1));
     }
@@ -1238,6 +1243,9 @@ int http_parse(HTTPParser *parser, char *buffer, size_t data_len) {
                 return -1;
             }
             http_header_set(r, parser->header_name, trimmed);
+            if (strcasecmp(parser->header_name, HTTP_HEADER_CONTENT_LENGTH) == 0) {
+                parser->r->has_content_length = str_to_size_t(trimmed, &parser->r->content_length) == 0;
+            }
             parser->header_name = NULL;
             parser->state = PARSE_HEADER_NAME;
             parser->last_char = *pos;
@@ -2712,7 +2720,7 @@ int fs_node_publish_info(FSNode *node) {
     char *http_headers_bytes = http_raw(req);
     http_object_free(req);
 
-    SecureConn *sc = calloc(1, sizeof(SecureConn));
+    SecureConn *sc = secure_conn_new();
     if (sc == NULL) {
         free(json);
         free(http_headers_bytes);
@@ -3088,6 +3096,10 @@ HTTPContext *http_context_new() {
         free(ctx);
         ctx = NULL;
     }
+
+    ctx->uploaded_bytes_count = 0;
+    ctx->upload_dst = 0;
+    ctx->upload_dst_open_req = NULL;
     return ctx;
 }
 
@@ -3118,6 +3130,11 @@ void http_context_free(HTTPContext *ctx) {
     if (ctx->file_fullname != NULL) {
         free(ctx->file_fullname);
         ctx->file_fullname = NULL;
+    }
+
+    if (ctx->upload_dst_open_req != NULL) {
+        free(ctx->upload_dst_open_req);
+        ctx->upload_dst_open_req = NULL;
     }
 
     ctx = NULL;
@@ -3152,7 +3169,6 @@ void http_write_uv_response_headers(HTTPContext *ctx, char *rsp_bytes) {
     uv_buf_t buf = uv_buf_init(rsp_bytes, strlen(rsp_bytes));
     wr->data = rsp_bytes;
     uv_write(wr, (uv_stream_t *) &ctx->handle, &buf, 1, http_on_write);
-
 }
 
 /**
@@ -3226,8 +3242,8 @@ void http_on_file_read(uv_fs_t *req) {
 }
 
 /**
- * Function: http_on_file_open
- * ---------------------------
+ * @brief Callback function for handling after file opens.
+ *
  * This function is called when a file is successfully opened for reading.
  * It prepares the HTTP response headers based on the file information and sends them to the client.
  * If any error occurs during the process, it sends an appropriate error response and closes the connection.
@@ -3306,6 +3322,13 @@ void http_on_file_open(uv_fs_t *req) {
     uv_fs_read(uv_default_loop(), &ctx->req, ctx->req.file, &buf, 1, offset, http_on_file_read);
 }
 
+
+void http_on_write_upload_file(uv_fs_t *req) {
+    uv_fs_req_cleanup(req);
+    free(req);
+}
+
+
 /**
  * @brief Callback function for handling HTTP requests
  *
@@ -3325,7 +3348,8 @@ void http_on_request(uv_stream_t *handle, ssize_t buf_size, const uv_buf_t *buf)
 
     HTTPContext *ctx = (HTTPContext *) handle->data;
 
-    if (http_parse(ctx->parser, buf->base, buf_size) < 0) {
+    int data_index = 0;
+    if ((data_index = http_parse(ctx->parser, buf->base, buf_size)) < 0) {
         uv_close((uv_handle_t *) handle, http_on_connection_close);
         return;
     }
@@ -3338,7 +3362,30 @@ void http_on_request(uv_stream_t *handle, ssize_t buf_size, const uv_buf_t *buf)
     const char *method = http_request_method(r);
     const char *uri = http_request_uri(r);
 
-    dzlog_info("%s %s", method, uri);
+    // Validating the URI
+    if (strstr(uri, "..") != NULL) {
+        dzlog_error("uri contains '..'");
+        HTTPObject *rsp = http_response(HTTP_STATUS_BAD_REQUEST, "BAD REQUEST");
+        http_write_uv_response_headers(ctx, http_raw(rsp));
+        http_object_free(rsp);
+        uv_close((uv_handle_t *) handle, http_on_connection_close);
+        return;
+    }
+
+    const char *c = uri;
+    int slash_count = 0;
+    while (*c != '\0') {
+        if ((*c != '/' && !isalnum(*c) && *c != '.' && *c != '-') || (*c == '/' && slash_count > 1)) {
+            HTTPObject *rsp = http_response(HTTP_STATUS_BAD_REQUEST, "BAD REQUEST");
+            http_write_uv_response_headers(ctx, http_raw(rsp));
+            http_object_free(rsp);
+            uv_close((uv_handle_t *) handle, http_on_connection_close);
+            return;
+        }
+        if (*c == '/') slash_count++;
+        c++;
+    }
+
 
     if (strcmp(method, HTTP_METHOD_GET) == 0) {
         if (strcmp(uri, "/favicon.ico") == 0) {
@@ -3408,6 +3455,50 @@ void http_on_request(uv_stream_t *handle, ssize_t buf_size, const uv_buf_t *buf)
         return;
     }
 
+    if (strcmp(method, HTTP_METHOD_PUT) == 0) {
+        if (ctx->file_fullname == NULL) {
+            ctx->file_fullname = fs_node_full_path(ctx->fs_node, uri);
+            if (ctx->file_fullname == NULL) {
+                uv_close((uv_handle_t *) handle, http_on_connection_close);
+                return;
+            }
+
+            ctx->upload_dst_open_req = (uv_fs_t *) malloc(sizeof(uv_fs_t));
+            if (ctx->upload_dst_open_req == NULL) {
+                free(ctx->file_fullname);
+                uv_close((uv_handle_t *) handle, http_on_connection_close);
+                return;
+            }
+
+            ctx->upload_dst = uv_fs_open(uv_default_loop(), ctx->upload_dst_open_req, ctx->file_fullname, O_WRONLY | O_CREAT | O_TRUNC, 0644, NULL);
+
+            if (ctx->upload_dst < 0) {
+                HTTPObject *rsp = http_response(HTTP_STATUS_INTERNAL, "INTERNAL SERVER ERROR");
+                http_write_uv_response_headers(ctx, http_raw(rsp));
+                http_object_free(rsp);
+                uv_close((uv_handle_t *) handle, http_on_connection_close);
+                return;
+            }
+
+        }
+
+        uv_fs_t *write_req = (uv_fs_t *) malloc(sizeof(uv_fs_t));
+        uv_buf_t wrbuf = uv_buf_init(buf->base + data_index, buf_size - data_index);
+        uv_fs_write(uv_default_loop(), write_req, ctx->upload_dst, &wrbuf, 1, -1, http_on_write_upload_file);
+        ctx->uploaded_bytes_count += buf_size - data_index;
+
+        if (buf_size == 0 || ctx->uploaded_bytes_count == ctx->parser->r->content_length) {
+            uv_fs_close(uv_default_loop(), ctx->upload_dst_open_req, ctx->upload_dst_open_req->file, NULL);
+
+            HTTPObject *rsp = http_response(HTTP_STATUS_OK, "OK");
+            http_write_uv_response_headers(ctx, http_raw(rsp));
+            http_object_free(rsp);
+            uv_close((uv_handle_t *) handle, http_on_connection_close);
+            return;
+        }
+        return;
+    }
+
     if (strcmp(method, HTTP_METHOD_DELETE) == 0) {
         if (fs_node_delete_file(ctx->fs_node, uri) != 0) {
             HTTPObject *rsp = http_response("500", "INTERNAL SERVER ERROR");
@@ -3418,7 +3509,6 @@ void http_on_request(uv_stream_t *handle, ssize_t buf_size, const uv_buf_t *buf)
         }
         return;
     }
-
 
     uv_close((uv_handle_t *) handle, http_on_connection_close);
 }
@@ -3519,12 +3609,12 @@ int svc_serve(Server *server, uv_connection_cb on_connection) {
 }
 
 int main(void) {
-    if (dzlog_init("zlog.conf", "my_cat")) {
+    if (dzlog_init("zlog.conf", "fsnode")) {
         printf("zlog initialization failed\n");
         return -1;
     }
 
-    zlog_category_t *log_c = zlog_get_category("my_cat");
+    zlog_category_t *log_c = zlog_get_category("fsnode");
     if (!log_c) {
         printf("zlog get category failed\n");
         zlog_fini();
@@ -3569,5 +3659,3 @@ int main(void) {
     free(http);
     return 0;
 }
-
-
