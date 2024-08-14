@@ -16,6 +16,7 @@
 #include <netdb.h>
 #include <unistd.h>
 #include <sys/statvfs.h>
+#include <ctype.h>
 
 #include <uv.h>
 #include <duckdb.h>
@@ -25,6 +26,7 @@
 #include <openssl/err.h>
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
+#include <openssl/bio.h>
 #include <zlog.h>
 #include <jansson.h>
 

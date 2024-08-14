@@ -1,5 +1,4 @@
 #include "include/fsnode.h"
-#include <ctype.h>
 
 /*
  * ###################
@@ -69,7 +68,9 @@ int env_load(void *container, env_var_cb var_cb) {
         ok = var_cb(container, var);
         free(clean_line);
         free((char *) var.name);
-        free((char *) var.value);
+        if (var.value != NULL) {
+            free((char *) var.value);
+        }
         if (!ok) {
             return 1;
         }
@@ -1701,7 +1702,7 @@ int s3_download_clean(S3Downloader *s3) {
  * ###################
  */
 
-bool set_env_var(void *container, env_var_t var) {
+bool fs_node_set_env_var(void *container, env_var_t var) {
     FSNode *node = (FSNode *) container;
 
     if (strcmp(var.name, ENV_DISK_DIR) == 0) {
@@ -1897,16 +1898,6 @@ int fs_node_init(FSNode *node) {
         return 1;
     }
 
-    node->ssl_server_ctx = SSL_CTX_new(SSLv23_server_method());
-    if (SSL_CTX_use_certificate_file(node->ssl_server_ctx, FS_NODE_SERVICE_CERT_FILENAME, SSL_FILETYPE_PEM) <= 0) {
-        ERR_print_errors_fp(stderr);
-        return 1;
-    }
-    if (SSL_CTX_use_PrivateKey_file(node->ssl_server_ctx, FS_NODE_SERVICE_KEY_FILENAME, SSL_FILETYPE_PEM) <= 0 ) {
-        ERR_print_errors_fp(stderr);
-        return 1;
-    }
-
     node->s3_ssl_ctx = SSL_CTX_new(SSLv23_client_method());
     SSL_CTX_set_session_cache_mode(node->s3_ssl_ctx, SSL_SESS_CACHE_CLIENT);  // Enable client-side caching
     SSL_CTX_sess_set_cache_size(node->s3_ssl_ctx, 2048);
@@ -1916,13 +1907,9 @@ int fs_node_init(FSNode *node) {
         fs_node_free(node);
         return 1;
     }
+
     SSL_CTX_set_session_cache_mode(node->registry->ssl_ctx, SSL_SESS_CACHE_CLIENT);  // Enable client-side caching
     SSL_CTX_sess_set_cache_size(node->registry->ssl_ctx, 10);
-
-    // Parsing .env handle
-    if (env_load((void *) node, set_env_var) != 0) {
-        return 1;
-    }
 
     // check data directory
     struct stat info;
@@ -2964,6 +2951,21 @@ int fs_node_get_signed_certificate(FSNode *node) {
     return result;
 }
 
+
+int fs_node_init_service_tls_context(FSNode *node) {
+    node->ssl_server_ctx = SSL_CTX_new(SSLv23_server_method());
+    if (SSL_CTX_use_certificate_file(node->ssl_server_ctx, FS_NODE_SERVICE_CERT_FILENAME, SSL_FILETYPE_PEM) <= 0) {
+        ERR_print_errors_fp(stderr);
+        return 1;
+    }
+
+    if (SSL_CTX_use_PrivateKey_file(node->ssl_server_ctx, FS_NODE_SERVICE_KEY_FILENAME, SSL_FILETYPE_PEM) <= 0 ) {
+        ERR_print_errors_fp(stderr);
+        return 1;
+    }
+
+    return 0;
+}
 /*
  * ###################
  * # HTTP SERVICE REQUEST HANDLING
@@ -3386,7 +3388,6 @@ void http_on_request(uv_stream_t *handle, ssize_t buf_size, const uv_buf_t *buf)
         c++;
     }
 
-
     if (strcmp(method, HTTP_METHOD_GET) == 0) {
         if (strcmp(uri, "/favicon.ico") == 0) {
             HTTPObject *rsp = http_response("404", "NOT FOUND");
@@ -3628,6 +3629,13 @@ int main(void) {
     if (node == NULL) {
         return 1;
     }
+
+    // Parsing .env handle
+    if (env_load((void *) node, fs_node_set_env_var) != 0) {
+        dzlog_error("failed to load env variable");
+        return 1;
+    }
+
     if (fs_node_init(node) != 0) {
         fs_node_free(node);
         return 1;
@@ -3638,6 +3646,13 @@ int main(void) {
         dzlog_error("could not get certificate");
         return 1;
     }
+
+    if (fs_node_init_service_tls_context(node) != 0) {
+        fs_node_free(node);
+        dzlog_error("failed to initialize service tls context");
+        return 1;
+    }
+
     fs_node_get_disk_usage(node->disk->dir, &node->disk->usage);
     fs_node_publish_info(node);
 
