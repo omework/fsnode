@@ -16,17 +16,15 @@
 #include <netdb.h>
 #include <unistd.h>
 #include <sys/statvfs.h>
-#include <ctype.h>
-
 #include <uv.h>
 #include <duckdb.h>
 #include <magic.h>
 #include <openssl/pem.h>
 #include <openssl/ssl.h>
-#include <openssl/err.h>
-#include <openssl/evp.h>
-#include <openssl/hmac.h>
 #include <openssl/bio.h>
+#include <openssl/err.h>
+#include <openssl/hmac.h>
+#include <string.h>
 #include <zlog.h>
 #include <jansson.h>
 
@@ -37,7 +35,7 @@
 #define FILE_CHUNK_SIZE (1*MB)
 
 
-#define unused __attribute__((unused))
+#define unused(x) (void)(x)
 
 /*
  * ###################
@@ -88,19 +86,6 @@ int env_load(void *container, env_var_cb var_cb);
  * ###################
  */
 
-typedef struct {
-    size_t cap;
-    size_t len;
-    char **names;
-    char **values;
-} Map;
-
-typedef struct {
-    size_t cap;
-    size_t len;
-    void **items;
-} List;
-
 char *toLower(const char *);
 
 int sha256(const char *in, size_t in_len, char **out, size_t *out_len);
@@ -123,12 +108,20 @@ int parse_size(const char *str_size, uint64_t *out_size);
 
 int handle_error(int code, const char *msg);
 
+int read_file(const char *name, char **out, size_t *out_len);
+
 /*
  * ###################
  * # SECTION LIST
  * # This section contains definition of map
  * ###################
  */
+
+typedef struct {
+    size_t cap;
+    size_t len;
+    void **items;
+} List;
 
 List *list_create();
 
@@ -140,6 +133,8 @@ void list_add(List *list, char *item);
 
 void *list_pop(List *list);
 
+void *list_pop_head(List *list);
+
 void list_clear(List *list);
 
 void list_free(List *list);
@@ -150,6 +145,13 @@ void list_free(List *list);
  * # This section contains definition of map
  * ###################
  */
+
+typedef struct {
+    size_t cap;
+    size_t len;
+    char **names;
+    char **values;
+} Map;
 
 Map *map_create();
 
@@ -172,6 +174,33 @@ EVP_PKEY * generate_rsa_key_pair(int bits);
 X509_REQ * generate_certificate_sign_request(EVP_PKEY *pkey);
 
 char *certificate_sign_request_to_bytes(X509_REQ *x509_req, size_t *len);
+
+#define TLS_RECORD_MAX_SIZE     65540 // max size of a TLS record
+#define STREAM_BIO_BUFFER_SIZE  TLS_RECORD_MAX_SIZE
+
+typedef struct {
+    const char *name;
+    BIO *bio;
+    char *buffer;
+    size_t capacity;
+    size_t limit;
+    size_t offset;
+    bool should_flush;
+} StreamBIO;
+
+BIO *streamBIO_new(const char *name);
+
+int streamBIO_write(BIO *bio, const char *data, int len);
+
+int streamBIO_read(BIO *bio, char *data, int len);
+
+static int streamBIO_puts(BIO *bio, const char *str);
+
+static int streamBIO_gets(BIO *bio, char *str, int size);
+
+long streamBIO_crtl(BIO *bio, int cmd, long arg1, void *args2);
+
+int streamBIO_destroy(BIO *bio);
 
 /*
  * ###################
@@ -404,6 +433,7 @@ int s3_download_clean(S3Downloader *s3);
 
 #define FS_NODE_DB_NAME                             "records.db"
 #define FS_NODE_SERVICE_CERT_FILENAME               "svc.crt"
+#define FS_NODE_SERVICE_CA_CRT_FILENAME             "ca.crt"
 #define FS_NODE_SERVICE_KEY_FILENAME                "svc.key"
 
 #define FS_NODE_CLIENT_RETRY_AFTER_IN_SECONDS       "3"
@@ -434,6 +464,8 @@ typedef struct {
     char *cert;
     char *access_key;
     char *secret_key;
+
+    char *ca_crt_bytes;
 } Registry;
 
 typedef struct {
@@ -567,7 +599,16 @@ typedef struct {
 } Server;
 
 typedef struct {
+    SSL *ssl;
+    BIO *read;
+    BIO *write;
+    List *send_queue;
+} TLSSession;
+
+typedef struct {
     uv_tcp_t handle;
+    TLSSession *tls;
+
     FSNode *fs_node;
     HTTPParser *parser;
     char *buf;
@@ -580,32 +621,52 @@ typedef struct {
     size_t bytes_sent;
     size_t bytes_total;
     size_t file_offset;
-    SSL *ssl;
 
     bool has_content_length;
     size_t uploaded_bytes_count;
     uv_fs_t *upload_dst_open_req;
     uv_file upload_dst;
 
-} HTTPContext;
+} Client;
 
-HTTPContext *http_context_new();
+TLSSession *tls_session_new(SSL_CTX *ctx);
 
-void http_context_free(HTTPContext *ctx);
+void tls_session_free(TLSSession * session);
 
-void http_on_connection_close(uv_handle_t *handle);
+#define DECRYPT_RESULT_OK 0
+#define DECRYPT_RESULT_ERROR 1
+#define DECRYPT_RESULT_NEED_MORE_DATA 2
+#define DECRYPT_RESULT_SHOULD_WRITE_DATA 3
 
-void http_on_file_write(uv_write_t *req, int status);
+Client *client_new();
 
-void http_on_file_read(uv_fs_t *req);
+void client_free(Client *client);
 
-void http_on_file_open(uv_fs_t *req);
+void uv_client_send(Client *client, const char *data, size_t len);
 
-void http_on_request(uv_stream_t *handle, ssize_t buf_size, const uv_buf_t *buf);
+void uv_tls_send_written(Client *client);
 
-void http_alloc_buffer(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf);
+void uv_tls_write_data(Client *client, const char* data, size_t data_len);
 
-void http_on_new_connection(uv_stream_t *server, int status);
+int uv_tls_encrypt(Client *client, const char *data, size_t data_len, char **out, size_t *out_len);
+
+int uv_tls_decrypt(Client *client, const char *data, size_t data_len, char **out, size_t *out_len);
+
+void uv_on_client_close(uv_handle_t *handle);
+
+void uv_on_file_bytes_written(uv_write_t *req, int status);
+
+void uv_on_file_read(uv_fs_t *req);
+
+void uv_on_file_opened(uv_fs_t *req);
+
+void uv_on_client_data(uv_stream_t *handle, ssize_t buf_size, const uv_buf_t *buf);
+
+void uv_on_alloc_buffer(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf);
+
+void uv_on_new_client(uv_stream_t *server, int status);
+
+
 
 
 #endif //FSNODE_FSNODE_H
