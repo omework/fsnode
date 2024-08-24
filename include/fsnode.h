@@ -34,7 +34,6 @@
 
 #define FILE_CHUNK_SIZE (1*MB)
 
-
 #define unused(x) (void)(x)
 
 /*
@@ -176,31 +175,6 @@ X509_REQ * generate_certificate_sign_request(EVP_PKEY *pkey);
 char *certificate_sign_request_to_bytes(X509_REQ *x509_req, size_t *len);
 
 #define TLS_RECORD_MAX_SIZE     65540 // max size of a TLS record
-#define STREAM_BIO_BUFFER_SIZE  TLS_RECORD_MAX_SIZE
-
-typedef struct {
-    const char *name;
-    BIO *bio;
-    char *buffer;
-    size_t capacity;
-    size_t limit;
-    size_t offset;
-    bool should_flush;
-} StreamBIO;
-
-BIO *streamBIO_new(const char *name);
-
-int streamBIO_write(BIO *bio, const char *data, int len);
-
-int streamBIO_read(BIO *bio, char *data, int len);
-
-static int streamBIO_puts(BIO *bio, const char *str);
-
-static int streamBIO_gets(BIO *bio, char *str, int size);
-
-long streamBIO_crtl(BIO *bio, int cmd, long arg1, void *args2);
-
-int streamBIO_destroy(BIO *bio);
 
 /*
  * ###################
@@ -253,7 +227,6 @@ void sc_free(SecureConn *sc);
 #define HTTP_HEADER_RANGE                           "Range"
 #define HTTP_HEADER_DATE                            "Date"
 #define HTTP_HEADER_CONTENT_LENGTH                  "Content-Length"
-#define HTTP_HEADER_CONTENT_LENGTH_LC               "content-length"
 #define HTTP_HEADER_CONTENT_TYPE                    "Content-Type"
 #define HTTP_HEADER_AUTHORIZATION                   "Authorization"
 #define HTTP_HEADER_ACCEPT_RANGES                   "Accept-Ranges"
@@ -281,8 +254,10 @@ void sc_free(SecureConn *sc);
     bool has_content_length;\
     size_t content_length;\
     char* payload_hash;\
+    Range range;\
     Map *queries;\
-    Map *headers; \
+    Map *headers;\
+
 
 typedef enum {
     range_unspecified = 0,
@@ -347,13 +322,13 @@ const char * http_header_get(HTTPObject *r, char *name);
 
 void http_header_set(HTTPObject *r, char *name, char *value);
 
-int http_get_content_range(HTTPObject *r, Range *range);
+int http_parse_content_range(const char *header, Range *range);
 
 HTTPParser *http_new_parser();
 
 char *http_raw(HTTPObject *object);
 
-int http_parse(HTTPParser *parser, char *buffer, size_t data_len);
+int http_parse(HTTPParser *parser, const char *buffer, size_t data_len);
 
 void http_parser_free(HTTPParser *parser);
 
@@ -364,15 +339,14 @@ void http_parser_free(HTTPParser *parser);
  * ###################
  */
 
-#define HTTP_HEADER_X_AMZ_CONTENT_SHA256    "x-amz-content-sha256"
-#define HTTP_HEADER_X_AMZ_DATE              "x-amz-date"
+#define HTTP_HEADER_X_AMZ_CONTENT_SHA256 "x-amz-content-sha256"
+#define HTTP_HEADER_X_AMZ_DATE           "x-amz-date"
 
 #define AWS_SIGNATURE_ALGORITHM         "AWS4-HMAC-SHA256"
 #define AWS_REQUEST                     "aws4_request"
 #define AWS_SERVER_AUTHORITY            "amazonaws.com"
 
 #define AWS_S3_FILE_DOWNLOAD_BUF_SIZE   (32 * KB)
-
 #define EMPTY_CONTENT_SHA256            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 typedef struct {
@@ -410,6 +384,7 @@ int aws_sign_v4(AWS *aws, HTTPObject* r, const char *request_payload_hash);
 void s3_downloader_free(S3Downloader *s3);
 
 int s3_download_clean(S3Downloader *s3);
+
 
 /*
  * ###################
@@ -489,6 +464,7 @@ typedef struct {
 
 typedef struct {
     FILE *handle;
+    char *path;
     char *mime_type;
     size_t size;
     size_t limit;
@@ -513,7 +489,6 @@ typedef struct {
     Disk *disk;
     AWS *aws;
     Downloads *downloads;
-
     pthread_mutex_t prune_mutex;
 
     magic_t magic_cookie;
@@ -579,24 +554,7 @@ void fs_file_free(File *file);
  * ###################
  */
 
-typedef struct {
-    uv_tcp_t * handle;
-    SSL *ssl;
-    struct sockaddr_in *addr;
-    SSL_CTX *ssl_ctx;
-    FSNode *fs_node;
-} RegistryContext;
-
-typedef struct {
-    const char *name;
-    char *ip;
-    int port;
-    FSNode *node;
-    uv_tcp_t tcp;
-    struct uv_loop_s *loop;
-
-    RegistryContext *registry;
-} Server;
+typedef void* any_t;
 
 typedef struct {
     SSL *ssl;
@@ -606,67 +564,191 @@ typedef struct {
 } TLSSession;
 
 typedef struct {
-    uv_tcp_t handle;
     TLSSession *tls;
+    uv_tcp_t handle;
+} ClientConn;
 
+typedef struct {
+    size_t sent;
+} send_info_t;
+
+typedef void (*destroy_cb) (any_t o);
+
+typedef any_t (*create_recv_handler_cb) (any_t input);
+
+typedef struct {
+    ClientConn *conn;
+    any_t recv_handler;
+} context_t;
+
+typedef void (*on_send_cb) (context_t ctx, send_info_t info);
+
+typedef void (*recv_cb) (const context_t ctx, const char *data, size_t len);
+
+typedef struct {
+    uv_tcp_t * handle;
+    SSL *ssl;
+    struct sockaddr_in *addr;
+    SSL_CTX *ssl_ctx;
     FSNode *fs_node;
-    HTTPParser *parser;
-    char *buf;
+} RegistryContext;
 
-    char *file_fullname;
+typedef struct {
+    FSNode *fs_node;
 
-    Range range;
-    uv_fs_t req;
-    size_t buf_len;
-    size_t bytes_sent;
-    size_t bytes_total;
-    size_t file_offset;
+    any_t svc;
+    ClientConn *conn;
 
-    bool has_content_length;
-    size_t uploaded_bytes_count;
-    uv_fs_t *upload_dst_open_req;
-    uv_file upload_dst;
+    recv_cb recv_cb;
 
+    any_t recv_handler;
+    destroy_cb destroy_recv_handler;
 } Client;
+
+typedef struct {
+    any_t create_param;
+
+    create_recv_handler_cb create_recv_handler;
+    destroy_cb destroy_recv_handler;
+    recv_cb recv_handle;
+} svc_handler_t;
+
+typedef struct {
+    const char *name;
+    char *ip;
+    int port;
+    uv_tcp_t tcp;
+    SSL_CTX *ssl_ctx;
+    struct uv_loop_s *loop;
+    RegistryContext *registry;
+    svc_handler_t *svc_handler;
+} Server;
+
+typedef struct {
+    ClientConn *conn;
+    on_send_cb send_cb;
+    uv_buf_t buffer;
+} send_context_t;
+
+#define TLS_IO_RESULT_OK 0
+#define TLS_IO_RESULT_ERROR 1
+#define TLS_IO_RESULT_NEED_MORE_DATA 2
+#define TLS_IO_RESULT_NO_DATA 3
+
+context_t client_ctx(Client *client);
+
+void ctx_send_data(context_t ctx, char *data, size_t len, on_send_cb on_send);
+
+void ctx_close(context_t ctx);
+
+ClientConn *conn_new();
+
+void conn_free(ClientConn *conn);
+
+void conn_close(ClientConn *conn);
 
 TLSSession *tls_session_new(SSL_CTX *ctx);
 
 void tls_session_free(TLSSession * session);
 
-#define DECRYPT_RESULT_OK 0
-#define DECRYPT_RESULT_ERROR 1
-#define DECRYPT_RESULT_NEED_MORE_DATA 2
-#define DECRYPT_RESULT_SHOULD_WRITE_DATA 3
-
 Client *client_new();
 
 void client_free(Client *client);
 
-void uv_client_send(Client *client, const char *data, size_t len);
+int tls_encrypt(ClientConn *conn, const char *data, size_t data_len, char **out, size_t *out_len);
 
-void uv_tls_send_written(Client *client);
-
-void uv_tls_write_data(Client *client, const char* data, size_t data_len);
-
-int uv_tls_encrypt(Client *client, const char *data, size_t data_len, char **out, size_t *out_len);
-
-int uv_tls_decrypt(Client *client, const char *data, size_t data_len, char **out, size_t *out_len);
+int tls_decrypt(ClientConn *conn, const char *data, size_t data_len, char **out, size_t *out_len);
 
 void uv_on_client_close(uv_handle_t *handle);
 
-void uv_on_file_bytes_written(uv_write_t *req, int status);
+void uv_on_send_data(uv_write_t *req, int status);
 
-void uv_on_file_read(uv_fs_t *req);
-
-void uv_on_file_opened(uv_fs_t *req);
-
-void uv_on_client_data(uv_stream_t *handle, ssize_t buf_size, const uv_buf_t *buf);
+void uv_on_receive_data(uv_stream_t *handle, ssize_t buf_size, const uv_buf_t *buf);
 
 void uv_on_alloc_buffer(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf);
 
 void uv_on_new_client(uv_stream_t *server, int status);
 
+/*
+ * ###################
+ * # HTTP SERVICE HANDLING
+ * ###################
+ */
 
+typedef HTTPObject* (*http_request_handle_func) (any_t handler, HTTPObject *req, const char *chunk, size_t len);
 
+typedef struct {
+    size_t limit;
+    size_t offset;
+} Upload;
+
+typedef struct {
+    uv_buf_t *buf;
+    uv_fs_t *fs_req;
+
+    int64_t offset;
+    size_t available;
+    size_t sent;
+} Download;
+
+typedef struct {
+    context_t ctx;
+    ClientConn *conn;
+    Range range;
+    Download *download;
+    Upload *upload;
+} http_ctx_t;
+
+typedef struct {
+    Client *client;
+    HTTPParser *parser;
+    http_ctx_t *ctx;
+} http_recv_handler_t;
+
+void http_on_file_chunk_sent(uv_write_t *req, int status);
+
+void http_on_file_read(uv_fs_t *req);
+
+void http_on_file_opened(uv_fs_t *req);
+
+void http_ctx_close(http_ctx_t *hc);
+
+void http_recv(context_t ctx, const char *data, size_t len);
+
+any_t http_create_recv_handler(any_t param);
+
+void http_destroy_recv_handler(any_t handler);
+
+svc_handler_t *new_http_svc_handler();
+
+/*
+ * ###################
+ * # ECHO SVC
+ * ###################
+ */
+
+typedef struct {
+    Client *client;
+} EchoReceiver;
+
+typedef struct {
+    Client *client;
+} EchoSender;
+
+void echo_recv(context_t ctx, const char *data, size_t len);
+
+any_t echo_create_recv_handler(any_t param);
+
+void echo_destroy_recv_handler(any_t handler);
+
+any_t echo_create_send_handler(any_t param);
+
+void echo_destroy_send_handler(any_t handler);
+
+void echo_send(any_t handler, char *data, size_t len);
+
+any_t echo_get_send_handler(any_t recv_handler);
+
+svc_handler_t *new_echo_svc_handler();
 
 #endif //FSNODE_FSNODE_H

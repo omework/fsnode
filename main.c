@@ -343,7 +343,7 @@ int read_file(const char *name, char **out, size_t *out_len) {
     rewind(file);  // Go back to the beginning of the file
 
     // Allocate buffer to hold the file content
-    char *buffer = (char*)malloc(file_size + 1);  // +1 for the null terminator
+    char *buffer = (char *) malloc(file_size + 1);  // +1 for the null terminator
     if (buffer == NULL) {
         fclose(file);
         return 1;
@@ -351,7 +351,7 @@ int read_file(const char *name, char **out, size_t *out_len) {
 
     // Read file content into the buffer
     size_t bytes_read = fread(buffer, 1, file_size, file);
-    if (bytes_read != file_size) {
+    if (bytes_read != (size_t) file_size) {
         free(buffer);
         fclose(file);
         return 1;
@@ -434,10 +434,10 @@ void *list_pop_head(List *list) {
         return NULL;
     }
 
-    void * item = list->items[0];
+    void *item = list->items[0];
     list->items[0] = NULL;
 
-    for (int i = 0; i < list->len - 1; i++) {
+    for (size_t i = 0; i < list->len - 1; i++) {
         list->items[i] = list->items[i + 1];
         list->items[i + 1] = NULL;
     }
@@ -780,139 +780,8 @@ char *certificate_sign_request_to_bytes(X509_REQ *x509_req, size_t *len) {
     return pem_data;
 }
 
-BIO* streamBIO_new(const char *name) {
-    StreamBIO *sb = (StreamBIO*) OPENSSL_malloc(sizeof(StreamBIO));
-    if (sb == NULL) {
-        return NULL;
-    }
-
-    sb->name = name;
-    sb->offset = sb->limit = 0;
-    sb->capacity = STREAM_BIO_BUFFER_SIZE;
-    sb->buffer = OPENSSL_malloc(STREAM_BIO_BUFFER_SIZE);
-    if (sb->buffer == NULL) {
-        OPENSSL_free(sb);
-        return NULL;
-    }
-
-    BIO_METHOD *method = BIO_meth_new(BIO_TYPE_MEM, "Custom memory BIO");
-    if (method == NULL) {
-        OPENSSL_free(sb->buffer);
-        OPENSSL_free(sb);
-        return NULL;
-    }
-
-    BIO_meth_set_read(method, streamBIO_read);
-    BIO_meth_set_write(method, streamBIO_write);
-    BIO_meth_set_ctrl(method, streamBIO_crtl);
-    BIO_meth_set_destroy(method, streamBIO_destroy);
-
-    sb->bio = BIO_new(method);
-    if (sb->bio == NULL) {
-        BIO_meth_free(method);
-        OPENSSL_free(sb->buffer);
-        OPENSSL_free(sb);
-        return NULL;
-    }
-
-    BIO_set_data(sb->bio, sb);
-    BIO_set_init(sb->bio, 1);
-    return sb->bio;
-}
-
-int streamBIO_write(BIO *bio, const char *data, int len) {
-    StreamBIO *sb = BIO_get_data(bio);
-
-    size_t buffered = sb->limit - sb->offset;
-    if (sb->offset > 0) {
-        memmove(sb->buffer, sb->buffer + sb->offset, buffered);
-        sb->limit = buffered;
-        sb->offset = 0;
-    }
-
-    size_t available_space = sb->capacity - sb->limit;
-    if ((size_t) len > available_space) {
-        size_t needed_space = (size_t) (len - available_space);
-
-        size_t new_size = sb->capacity + needed_space;
-        char *new_buffer = (char *) realloc(sb->buffer, new_size);
-        if (new_buffer == NULL) {
-            return -1;
-        }
-        sb->buffer = new_buffer;
-        sb->capacity = new_size;
-    }
-
-    memcpy(sb->buffer + sb->limit, data, len);
-    sb->limit += (size_t) len;
-    return len;
-}
-
-int streamBIO_read(BIO *bio, char *data, int len) {
-    StreamBIO *sb = BIO_get_data(bio);
-
-    size_t available = sb->limit - sb->offset;
-
-    if (available == 0) {
-        BIO_set_retry_read(bio);  // Should retry reading, not writing
-        return -1;
-    }
-
-    if (available > (size_t) len) {
-        available = (size_t) len;
-    }
-
-    memcpy(data, sb->buffer + sb->offset, available);
-    sb->offset += available;
-    return (int) available;
-}
-
-long streamBIO_crtl(BIO *bio, int cmd, long arg1, void *arg2) {
-    unused(arg1);
-    unused(arg2);
-
-    StreamBIO *sb = BIO_get_data(bio);
-    switch (cmd) {
-        case BIO_CTRL_INFO:
-            return (long) (sb->limit - sb->offset);
-        case BIO_CTRL_RESET:
-            sb->offset = 0;
-            sb->limit = 0;
-            return 1;
-        case BIO_CTRL_PENDING:
-        case BIO_CTRL_WPENDING:
-            return (long) (sb->limit - sb->offset);
-        case BIO_CTRL_FLUSH:
-            sb->should_flush = (sb->limit - sb->offset);
-            return 1;
-        case BIO_CTRL_PUSH:
-            return 1;
-        default:
-            dzlog_warn("received command that is not handled: %d", cmd);
-            return 1;
-    }
-}
-
-int streamBIO_destroy(BIO *bio) {
-    StreamBIO *sb = BIO_get_data(bio);
-
-    if (sb == NULL) return 1;
-
-    if (sb->buffer != NULL){
-      free(sb->buffer);
-      sb->buffer = NULL;
-    }
-
-    BIO_free(sb->bio);
-
-    free(sb);
-    sb = NULL;
-
-    return 1;
-}
-
 TLSSession *tls_session_new(SSL_CTX *ctx) {
-    TLSSession * session = (TLSSession *) malloc(sizeof(TLSSession ));
+    TLSSession *session = (TLSSession *) malloc(sizeof(TLSSession));
     if (session == NULL) {
         return NULL;
     }
@@ -925,7 +794,9 @@ TLSSession *tls_session_new(SSL_CTX *ctx) {
 
     SSL_set_accept_state(session->ssl);
 
-    session->read = streamBIO_new("read");
+    session->read = BIO_new(BIO_s_mem());
+    session->write = BIO_new(BIO_s_mem());
+    /*session->read = streamBIO_new("read");
     if (session->read == NULL) {
         free(session);
         SSL_free(session->ssl);
@@ -938,13 +809,13 @@ TLSSession *tls_session_new(SSL_CTX *ctx) {
         free(session);
         SSL_free(session->ssl);
         return NULL;
-    }
+    }*/
 
     SSL_set_bio(session->ssl, session->read, session->write);
     return session;
 }
 
-void tls_session_free(TLSSession * session) {
+void tls_session_free(TLSSession *session) {
     if (session == NULL) {
         return;
     }
@@ -957,9 +828,7 @@ void tls_session_free(TLSSession * session) {
         BIO_free(session->write);
     }
 
-    if (session->ssl != NULL) {
-        SSL_free(session->ssl);
-    }
+    SSL_shutdown(session->ssl);
 
     free(session);
     session = NULL;
@@ -971,13 +840,14 @@ void tls_session_free(TLSSession * session) {
  * ###################
  */
 
- SecureConn * secure_conn_new() {
-     SecureConn *sc = (SecureConn *) malloc(sizeof(SecureConn));
-     if (sc == NULL) return NULL;
-     sc->bio = NULL;
-     sc->ssl = NULL;
-     return sc;
- }
+SecureConn *secure_conn_new() {
+    SecureConn *sc = (SecureConn *) malloc(sizeof(SecureConn));
+    if (sc == NULL) return NULL;
+    sc->bio = NULL;
+    sc->ssl = NULL;
+    return sc;
+}
+
 /**
  * @brief Establishes a secure TCP connection using SSL/TLS.
  *
@@ -1245,7 +1115,6 @@ void http_header_set(HTTPObject *r, char *name, char *value) {
     map_set(r->headers, name, value);
 }
 
-
 /**
  * @brief Get the content range of an HTTP request.
  *
@@ -1257,8 +1126,8 @@ void http_header_set(HTTPObject *r, char *name, char *value) {
  * @param range A pointer to the Range structure to store the content range information.
  * @return 0 if successful, 1 if there was an error parsing the "Range" header.
  */
-int http_get_content_range(HTTPObject *r, Range *range) {
-    const char *pos = map_value(r->headers, HTTP_HEADER_RANGE);
+int http_parse_content_range(const char *header, Range *range) {
+    const char* pos = header;
     range->type = range_unspecified;
     if (pos == NULL) {
         range->type = range_full;
@@ -1371,7 +1240,7 @@ HTTPParser *http_new_parser() {
  * @param data_len The length of the data in the buffer.
  * @return The number of bytes read from the buffer if successful, or a negative value if an error occurred.
  */
-int http_parse(HTTPParser *parser, char *buffer, size_t data_len) {
+int http_parse(HTTPParser *parser, const char *buffer, size_t data_len) {
     if (parser->r == NULL) {
         parser->r = http_new_object();
         if (parser->r == NULL) {
@@ -1381,9 +1250,9 @@ int http_parse(HTTPParser *parser, char *buffer, size_t data_len) {
     HTTPObject *r = parser->r;
 
     size_t token_len;
-    char *token_start = buffer;
-    char *pos = NULL;
-    char *end = buffer + data_len;
+    const char *token_start = buffer;
+    const char *pos = NULL;
+    const char *end = buffer + data_len;
 
     for (pos = buffer; pos != end && parser->state != PARSE_BODY; pos++) {
         token_len = pos - token_start;
@@ -1481,6 +1350,10 @@ int http_parse(HTTPParser *parser, char *buffer, size_t data_len) {
             http_header_set(r, parser->header_name, trimmed);
             if (strcasecmp(parser->header_name, HTTP_HEADER_CONTENT_LENGTH) == 0) {
                 parser->r->has_content_length = str_to_size_t(trimmed, &parser->r->content_length) == 0;
+            } else if (strcasecmp(parser->header_name, HTTP_HEADER_CONTENT_LENGTH) == 0) {
+                if (http_parse_content_range(trimmed, &parser->r->range) != 0) {
+                    return -1;
+                }
             }
             parser->header_name = NULL;
             parser->state = PARSE_HEADER_NAME;
@@ -2803,6 +2676,11 @@ void fs_file_free(File *file) {
         return;
     }
 
+    if (file->path != NULL) {
+        free(file->path);
+        file->path = NULL;
+    }
+
     if (file->handle != NULL) {
         fclose(file->handle);
         file->handle = NULL;
@@ -3206,6 +3084,11 @@ int fs_node_get_signed_certificate(FSNode *node) {
 }
 
 void ssl_info_callback(const SSL *ssl, int where, int ret) {
+    unused(ssl);
+    unused(where);
+    unused(ret);
+
+    /*
     const char *str;
     int w = where & ~SSL_ST_MASK;
 
@@ -3226,11 +3109,11 @@ void ssl_info_callback(const SSL *ssl, int where, int ret) {
         } else if (ret < 0) {
             printf("%s:error in %s\n", str, SSL_state_string_long(ssl));
         }
-    }
+    }*/
 }
 
 int fs_node_init_service_tls_context(FSNode *node) {
-    node->ssl_server_ctx = SSL_CTX_new(TLS_server_method());
+    node->ssl_server_ctx = SSL_CTX_new(TLS_method());
     SSL_CTX_set_min_proto_version(node->ssl_server_ctx, TLS1_2_VERSION);  // Minimum supported version is TLS 1.2
     SSL_CTX_set_max_proto_version(node->ssl_server_ctx, TLS1_3_VERSION);
 
@@ -3239,7 +3122,7 @@ int fs_node_init_service_tls_context(FSNode *node) {
         return 1;
     }
 
-    if (SSL_CTX_use_PrivateKey_file(node->ssl_server_ctx, FS_NODE_SERVICE_KEY_FILENAME, SSL_FILETYPE_PEM) <= 0 ) {
+    if (SSL_CTX_use_PrivateKey_file(node->ssl_server_ctx, FS_NODE_SERVICE_KEY_FILENAME, SSL_FILETYPE_PEM) <= 0) {
         ERR_print_errors_fp(stderr);
         return 1;
     }
@@ -3335,7 +3218,7 @@ HTTPObject *http_response(const char *code, const char *status_text) {
  *          If req->data is not NULL, this function frees the memory allocated for this data and sets req->data to NULL.
  *          The function also frees the memory allocated for the write request itself.
  */
-void http_on_write(uv_write_t *req, int status) {
+void uv_on_write_data(uv_write_t *req, int status) {
     if (status) {
         dzlog_error("HTTP response write failed: %s", uv_strerror(status));
     }
@@ -3366,210 +3249,32 @@ void task_prune_work(uv_work_t *req) {
 }
 
 /**
- * @brief Creates a new instance of Client.
+ * @brief Callback function for freeing upload file resources.
  *
- * This function allocates memory for an instance of Client and initializes its members.
- *
- * @return Pointer to the newly created Client instance, or NULL if memory allocation fails.
+ * @param req The file request
  */
-Client *client_new() {
-    Client *client = (Client *) malloc(sizeof(Client));
-    if (client == NULL) {
-        return NULL;
-    }
-
-    client->buf = NULL;
-    client->file_fullname = NULL;
-
-    client->parser = http_new_parser();
-    if (client->parser == NULL) {
-        free(client);
-        client = NULL;
-    }
-
-    client->uploaded_bytes_count = 0;
-    client->upload_dst = 0;
-    client->upload_dst_open_req = NULL;
-    return client;
+void uv_on_file_uploaded(uv_fs_t *req) {
+    uv_fs_req_cleanup(req);
+    free(req);
 }
 
-int uv_tls_encrypt(Client *client, const char *data, size_t data_len, char **out, size_t *out_len) {
-    if (SSL_write(client->tls->ssl, data, (int) data_len) <= 0) {
-        return 1;
-    }
-
-    *out_len = BIO_ctrl(client->tls->write, BIO_CTRL_INFO, 0, NULL);
-    if (*out_len < 0) {
-        return 1;
-    }
-
-    *out = malloc(*out_len);
-    if (*out == NULL) {
-        return 1;
-    }
-
-    int read = BIO_read(client->tls->write, *out, (int) *out_len);
-    if (read <= 0) return read;
-
-    *out_len = (size_t) read;
-    return 0;
-}
-
-int uv_tls_decrypt(Client *client, const char *data, size_t data_len, char **out, size_t *out_len) {
-    StreamBIO *write_stream = BIO_get_data(client->tls->write);
-    if (write_stream->should_flush) {
-        if (write_stream->limit - write_stream->offset > 0) {
-            return DECRYPT_RESULT_SHOULD_WRITE_DATA;
-        }
-        write_stream->should_flush = false;
-    }
-
-    int result = BIO_write(client->tls->read, data, (int) data_len);
-    if (result <= 0) {
-        return DECRYPT_RESULT_ERROR;
-    }
-
-    size_t total_read = 0;
-    char *buf = malloc(1024);
-    if (buf == NULL) {
-        return DECRYPT_RESULT_ERROR;
-    }
-
-    while(true) {
-        int read = SSL_read(client->tls->ssl, buf, 1024);
-        if (read <= 0) {
-
-            int ssl_error = SSL_get_error(client->tls->ssl, read);
-            unsigned long ssl_error_code = ERR_get_error();
-            char ssl_error_str[256];
-            ERR_error_string_n(ssl_error_code, ssl_error_str, sizeof(ssl_error_str));
-            free(buf);
-
-            switch(ssl_error) {
-                case SSL_ERROR_WANT_READ:
-                    if (write_stream->should_flush) {
-                        return DECRYPT_RESULT_SHOULD_WRITE_DATA;
-                    }
-                    return DECRYPT_RESULT_NEED_MORE_DATA;
-                case SSL_ERROR_WANT_WRITE:
-                    return DECRYPT_RESULT_SHOULD_WRITE_DATA;
-                default:
-                    fprintf(stderr, "SSL error: %s\n", ssl_error_str);
-                    if (*out != NULL) {
-                        free(*out);
-                    }
-                    return DECRYPT_RESULT_ERROR;
-            }
-            return read;
-        }
-
-        char *new_result = realloc(*out, total_read + (size_t) read);
-        if (new_result == NULL) {
-            if (*out != NULL) free(*out);
-            free(buf);
-            return DECRYPT_RESULT_ERROR;
-        }
-
-        *out = new_result;
-        memcpy(*out + total_read, buf, read);
-        total_read += (size_t) read;
-    }
-
-    free(buf);
-    *out_len = total_read;
-    return DECRYPT_RESULT_OK;
-}
-
-void uv_tls_send_written(Client *client) {
-    size_t size = (size_t) BIO_pending(client->tls->write);
-    if (size == 0) {
-        return;
-    }
-
-    char *buf = (char *) malloc(size);
-    if (buf == NULL) {
-        return;
-    }
-
-    int read_len = BIO_read(client->tls->write, buf, (int) size);
-    if (read_len < 0) {
-        uv_close((uv_handle_t *) &client->handle, uv_on_client_close);
-        return;
-    }
-
-    uv_client_send(client, buf, read_len);
-}
-
-void uv_tls_write_data(Client *client, const char* data, size_t data_len) {
-
-}
-
-/**
- * @brief Frees the Client structure and releases associated resources.
- *
- * This function frees the Client structure and releases resources allocated
- * for the parser, buffer, file name, and SSL context. It also sets the pointer
- * to the Client structure to NULL.
- *
- * @param client The Client structure to be freed.
+/*
+ * #######################
+ * # HTTP SERVICE HANDLING
+ * #######################
  */
-void client_free(Client *client) {
-    if (client == NULL) {
-        return;
-    }
 
-    if (client->parser != NULL) {
-        http_parser_free(client->parser);
-        client->parser = NULL;
-    }
-
-    if (client->buf != NULL) {
-        free(client->buf);
-        client->buf = NULL;
-    }
-
-    if (client->file_fullname != NULL) {
-        free(client->file_fullname);
-        client->file_fullname = NULL;
-    }
-
-    if (client->upload_dst_open_req != NULL) {
-        free(client->upload_dst_open_req);
-        client->upload_dst_open_req = NULL;
-    }
-
-    client = NULL;
+void http_ctx_close(http_ctx_t *hc) {
+    ctx_close(hc->ctx);
 }
 
-/**
- * @brief Callback function called when the connection is closed.
- *
- * This function handles freeing the resources associated with the HTTP context and the handle.
- *
- * @param handle The handle associated with the connection being closed.
- */
-void uv_on_client_close(uv_handle_t *handle) {
-    Client *client = (Client *) handle->data;
-    client_free(client);
-    free(handle);
-}
+void http_ctx_send(http_ctx_t *hc, char *data, size_t len, uv_write_cb after_write) {
+    unused(hc);
+    unused(data);
+    unused(len);
+    unused(after_write);
 
-/**
- * Writes response headers to the given Client
- *
- * @param client The Client to write response headers to
- * @param data The response headers to write
- */
-void uv_client_send(Client *client, const char *data, size_t len) {
-    uv_write_t *wr = (uv_write_t *) malloc(sizeof(uv_write_t));
-    if (wr == NULL) {
-        uv_close((uv_handle_t *) &client->handle, uv_on_client_close);
-        return;
-    }
-
-    uv_buf_t buf = uv_buf_init((char *) data, len);
-    wr->data = (char *) data;
-    uv_write(wr, (uv_stream_t *) &client->handle, &buf, 1, http_on_write);
+    ctx_close(hc->ctx);
 }
 
 /**
@@ -3589,18 +3294,16 @@ void uv_client_send(Client *client, const char *data, size_t len) {
  * @param req The UV write request object
  * @param status The status of the file write operation
  */
-void uv_on_file_bytes_written(uv_write_t *req, int status) {
-    Client *client = (Client *) req->data;
-    if (status || client->bytes_sent == client->bytes_total) {
-        uv_fs_req_cleanup(&client->req);
+void http_on_file_chunk_sent(uv_write_t *req, int status) {
+    http_ctx_t *ctx = (http_ctx_t *) req->data;
+    if (status || ctx->download->sent == ctx->download->available) {
         uv_fs_t close_req;
-        uv_fs_close(uv_default_loop(), &close_req, client->req.file, NULL);
-        uv_close((uv_handle_t *) &client->handle, uv_on_client_close);
+        uv_fs_close(uv_default_loop(), &close_req, ctx->download->fs_req->file, NULL);
+        uv_fs_req_cleanup(ctx->download->fs_req);
+        http_ctx_close(ctx);
         return;
     }
-
-    uv_buf_t buf = uv_buf_init(client->buf, client->buf_len);
-    uv_fs_read(uv_default_loop(), &client->req, client->req.file, &buf, 1, (int64_t) client->file_offset, uv_on_file_read);
+    uv_fs_read(uv_default_loop(), ctx->download->fs_req, ctx->download->fs_req->file, ctx->download->buf, 1, ctx->download->offset, http_on_file_read);
 }
 
 /**
@@ -3617,29 +3320,23 @@ void uv_on_file_bytes_written(uv_write_t *req, int status) {
  *
  * @param req The UV file system request object
  */
-void uv_on_file_read(uv_fs_t *req) {
-    Client *client = (Client *) req->data;
+void http_on_file_read(uv_fs_t *req) {
+    http_ctx_t *ctx = (http_ctx_t *) req->data;
     if (req->result <= 0) {
-        dzlog_info("client connexion closed");
-        uv_fs_req_cleanup(&client->req);
-        uv_fs_t close_req;
-        uv_fs_close(uv_default_loop(), &close_req, req->file, NULL);
-        uv_close((uv_handle_t *) req->data, uv_on_client_close);
+        uv_fs_req_cleanup(req);
+        uv_fs_close(uv_default_loop(), req, req->file, NULL);
+        http_ctx_close(ctx);
         return;
     }
 
-    size_t bytes_to_send = req->result;
-    if (client->bytes_sent + bytes_to_send > client->bytes_total) {
-        bytes_to_send = client->bytes_total - client->bytes_sent;
+    size_t chunk_size = req->result;
+    if (ctx->download->sent + chunk_size > ctx->download->available) {
+        chunk_size = ctx->download->available - ctx->download->sent;
     }
 
-    uv_write_t *wr = malloc(sizeof(uv_write_t));
-    wr->data = client;
-    uv_buf_t buf = uv_buf_init(client->buf, bytes_to_send);
-    uv_write(wr, (uv_stream_t *) &client->handle, &buf, 1, uv_on_file_bytes_written);
-
-    client->bytes_sent += bytes_to_send;
-    client->file_offset += bytes_to_send;
+    http_ctx_send(ctx, ctx->download->buf->base, chunk_size, http_on_file_chunk_sent);
+    ctx->download->sent += chunk_size;
+    ctx->download->offset += (int64_t) chunk_size;
 }
 
 /**
@@ -3651,83 +3348,597 @@ void uv_on_file_read(uv_fs_t *req) {
  *
  * @param req: pointer to the uv_fs_t structure representing the file open request
  */
-void uv_on_file_opened(uv_fs_t *req) {
-    Client *client = (Client *) req->data;
+void http_on_file_opened(uv_fs_t *req) {
+    http_ctx_t *ctx = (http_ctx_t *) req->data;
     if (req->result <= 0) {
-        uv_fs_req_cleanup(&client->req);
-        HTTPObject *rsp = http_response("500", "INTERNAL SERVER ERROR");
-        char *raw_rsp = http_raw(rsp);
-        uv_client_send(client, raw_rsp, strlen(raw_rsp));
-        http_object_free(rsp);
-        uv_close((uv_handle_t *) &client->handle, uv_on_client_close);
+        http_ctx_close(ctx);
         return;
     }
 
-    const char *uri = http_request_uri(client->parser->r);
-
-    File *info = malloc(sizeof(File));
-    if (info == NULL) {
-        uv_fs_close(uv_default_loop(), &client->req, client->req.file, NULL);
-        uv_close((uv_handle_t *) &client->handle, uv_on_client_close);
+    Download *download = ctx->download;
+    char *chunk_buffer = (char *) malloc(FILE_CHUNK_SIZE);
+    if (chunk_buffer == NULL) {
+        uv_fs_close(uv_default_loop(), req, req->file, NULL);
+        http_ctx_close(ctx);
         return;
     }
 
-    if (fs_node_get_file(client->fs_node, uri, client->range, info) != 0) {
-        uv_fs_close(uv_default_loop(), &client->req, client->req.file, NULL);
-        uv_close((uv_handle_t *) &client->handle, uv_on_client_close);
+    download->buf = (uv_buf_t *) malloc(sizeof(uv_buf_t ));
+    download->buf->base = chunk_buffer;
+    download->buf->len = FILE_CHUNK_SIZE;
+    download->fs_req = req;
+
+    uv_fs_read(uv_default_loop(), req, req->file, download->buf, 1, download->offset, http_on_file_read);
+}
+
+void http_send_response(http_ctx_t *ctx, HTTPObject *rsp) {
+    char *raw_rsp = http_raw(rsp);
+    ctx_send_data(ctx->ctx, raw_rsp, strlen(raw_rsp), NULL);
+    free(rsp);
+}
+
+void http_handle_get(any_t handler, HTTPObject *req, const char *chunk, size_t len) {
+    unused(chunk);
+    unused(len);
+    http_ctx_t *ctx = (http_ctx_t *) (handler);
+    Client *client = (Client *) ctx->conn->handle.data;
+
+    const char *uri = http_request_uri(req);
+
+    int pull_file_result;
+    bool downloaded = false;
+
+    if ((pull_file_result = fs_node_pull_storage_file(client->fs_node, uri, &downloaded)) != 0) {
+        HTTPObject *rsp;
+        switch (pull_file_result) {
+            case FS_NODE_ERROR_FILE_NOT_FOUND:
+            case FS_NODE_ERROR_S3_FILE_NOT_FOUND:
+                rsp = http_response(HTTP_STATUS_NOT_FOUND, "NOT FOUND");
+                break;
+            case FS_NODE_ERROR_S3_CANNOT_CONNECT:
+                rsp = http_response(HTTP_STATUS_SERVICE_UNAVAILABLE, "SERVICE UNAVAILABLE");
+                break;
+            case FS_NODE_ERROR_S3_QUEUE_FULL:
+                rsp = http_response(HTTP_STATUS_TOO_MANY_REQUESTS, "TOO MANY REQUESTS");
+                break;
+            case FS_NODE_ERROR_S3_FILE_BEING_DOWNLOADED:
+                rsp = http_retry_response(FS_NODE_CLIENT_RETRY_AFTER_IN_SECONDS);
+                break;
+            default:
+                rsp = http_response(HTTP_STATUS_INTERNAL, "INTERNAL SERVER ERROR");
+                break;
+        }
+        http_send_response(ctx, rsp);
+        http_ctx_close(ctx);
         return;
     }
 
-    client->bytes_total = info->available;
-    client->file_offset = client->range.offset;
+    if (downloaded) {
+        uv_work_t *work_req = (uv_work_t *) malloc(sizeof(uv_work_t));
+        work_req->data = client->fs_node;
+        uv_queue_work(uv_default_loop(), work_req, task_prune_work, task_after_prune);
+    }
 
-    const char *code = client->range.type != range_unspecified && info->available == info->size ? HTTP_STATUS_OK
-                                                                                                : HTTP_STATUS_PARTIAL_CONTENT;
-    HTTPObject *rsp = http_OK_response(code, (int) info->available, info->mime_type);
+    File *file = malloc(sizeof(File));
+    if (file == NULL) {
+        http_send_response(ctx, http_response(HTTP_STATUS_INTERNAL, "INTERNAL SERVER ERROR"));
+        http_ctx_close(ctx);
+        return;
+    }
+
+    if (fs_node_get_file(client->fs_node, uri, req->range, file) != 0) {
+        http_send_response(ctx, http_response(HTTP_STATUS_INTERNAL, "INTERNAL SERVER ERROR"));
+        http_ctx_close(ctx);
+        return;
+    }
+
+    const char *code =
+            req->range.type != range_unspecified && file->available == file->size
+            ? HTTP_STATUS_OK : HTTP_STATUS_PARTIAL_CONTENT;
+    HTTPObject *rsp = http_OK_response(code, (int) file->available, file->mime_type);
     if (rsp == NULL) {
-        uv_fs_close(uv_default_loop(), &client->req, client->req.file, NULL);
-        uv_close((uv_handle_t *) &client->handle, uv_on_client_close);
+        fs_file_free(file);
+        http_ctx_close(ctx);
         return;
     }
-
-    if (client->range.type != range_unspecified) {
+    if (req->range.type != range_unspecified) {
         char *range_bytes = malloc(100);
         if (range_bytes == NULL) {
-            uv_fs_close(uv_default_loop(), &client->req, client->req.file, NULL);
-            uv_close((uv_handle_t *) &client->handle, uv_on_client_close);
+            fs_file_free(file);
+            http_ctx_close(ctx);
             return;
         }
 
-        sprintf(range_bytes, "bytes %lu-%lu/%lu", client->range.offset, info->limit, info->size);
+        sprintf(range_bytes, "bytes %lu-%lu/%lu", req->range.offset, file->limit, file->size);
         http_header_set(rsp, strdup(HTTP_HEADER_CONTENT_RANGE), range_bytes);
     }
-
-    http_header_set(rsp, strdup(HTTP_HEADER_CONTENT_LENGTH), int_to_str((int) info->available));
+    http_header_set(rsp, strdup(HTTP_HEADER_CONTENT_LENGTH), int_to_str((int) file->available));
     http_header_set(rsp, strdup(HTTP_HEADER_ACCEPT_RANGES), strdup(HTTP_HEADER_ACCEPT_RANGES_BYTES_VALUE));
-    char *raw_rsp = http_raw(rsp);
-    uv_client_send(client, raw_rsp, strlen(raw_rsp));
-    http_object_free(rsp);
-    fs_file_free(info);
+    http_send_response(ctx, rsp);
 
-    client->buf = (char *) malloc(FILE_CHUNK_SIZE);
-    if (client->buf == NULL) {
-        uv_fs_close(uv_default_loop(), &client->req, client->req.file, NULL);
-        uv_close((uv_handle_t *) &client->handle, uv_on_client_close);
+
+    Download *download = (Download *) malloc(sizeof (Download));
+    download->available = file->available;
+    download->sent = 0;
+    ctx->download = download;
+
+    uv_fs_t *uv_file = (uv_fs_t *) malloc(sizeof(uv_fs_t));
+    if (file == NULL) {
+        ctx_close(ctx->ctx);
+        return;
+    }
+    uv_file->data = ctx;
+    uv_fs_open(uv_default_loop(), uv_file, file->path, O_RDONLY, 0, http_on_file_opened);
+    fs_file_free(file);
+}
+
+void http_handle_put(any_t handler, HTTPObject *req, const char *chunk, size_t len) {
+    unused(handler);
+    unused(req);
+    unused(chunk);
+    unused(len);
+}
+
+void http_handle_delete(any_t handler, HTTPObject *req, const char *chunk, size_t len) {
+    unused(handler);
+    unused(req);
+    unused(chunk);
+    unused(len);
+}
+
+void http_recv(const context_t ctx, const char *data, size_t len) {
+    http_recv_handler_t *h = (http_recv_handler_t *) ctx.recv_handler;
+    if (h->parser == NULL) {
+        h->parser = http_new_parser();
+    }
+
+    int data_index = 0;
+    if ((data_index = http_parse(h->parser, data, len)) < 0) {
+        HTTPObject *rsp = http_response(HTTP_STATUS_BAD_REQUEST, "BAD REQUEST");
+        char *raw_rsp = http_raw(rsp);
+        ctx_send_data(ctx,  raw_rsp, strlen(raw_rsp), NULL);
+        ctx_close(  ctx);
         return;
     }
 
-    client->buf_len = FILE_CHUNK_SIZE;
-    client->req.file = (uv_file) req->result;
-    client->req.data = client;
+    if (h->parser->state != PARSE_BODY) {
+        return;
+    }
 
-    int64_t offset = (int64_t) client->range.offset;
-    uv_buf_t buf = uv_buf_init(client->buf, client->buf_len);
-    uv_fs_read(uv_default_loop(), &client->req, client->req.file, &buf, 1, offset, uv_on_file_read);
+    HTTPObject *req = h->parser->r;
+
+    if (strcmp(http_request_method(req), HTTP_METHOD_GET) == 0) {
+        http_handle_get(NULL, req, data + data_index, len - data_index);
+
+    } else if  (strcmp(http_request_method(req), HTTP_METHOD_PUT) == 0) {
+        http_handle_put(NULL, req, data + data_index, len - data_index);
+
+    } else if  (strcmp(http_request_method(req), HTTP_METHOD_DELETE) == 0) {
+        http_handle_delete(NULL, req, data + data_index, len - data_index);
+
+    } else {
+        HTTPObject *rsp = http_response(HTTP_STATUS_NOT_FOUND, "NOT FOUND");
+        char *raw_rsp = http_raw(rsp);
+        ctx_send_data(ctx, raw_rsp, strlen(raw_rsp), NULL);
+        ctx_close(ctx);
+        return;
+    }
 }
 
-void uv_on_file_uploaded(uv_fs_t *req) {
-    uv_fs_req_cleanup(req);
+any_t http_create_recv_handler(any_t param) {
+    unused(param);
+    http_recv_handler_t *handler = (http_recv_handler_t *) malloc(sizeof (http_recv_handler_t));
+    handler->parser = http_new_parser();
+    return handler;
+}
+
+void http_destroy_recv_handler(any_t handler) {
+    if (handler == NULL) {
+        return;
+    }
+
+    http_recv_handler_t *h = (http_recv_handler_t *) handler;
+    if (h->parser != NULL) {
+        http_parser_free(h->parser);
+        h->parser = NULL;
+    }
+
+    free(h);
+    h = NULL;
+}
+
+svc_handler_t* new_http_svc_handler() {
+    svc_handler_t* handler = (svc_handler_t *) malloc(sizeof(svc_handler_t));
+    if (handler == NULL) {
+        return NULL;
+    }
+
+    handler->create_param = NULL;
+    handler->create_recv_handler = http_create_recv_handler;
+    handler->destroy_recv_handler = http_destroy_recv_handler;
+    handler->recv_handle = http_recv;
+
+    return handler;
+}
+
+/*
+ * ###################
+ * # ECHO SVC
+ * ###################
+ */
+
+void echo_recv(const context_t ctx, const char *data, size_t len) {
+    char * copy = (char *) malloc(len);
+    memcpy(copy, data, len);
+    printf("received: \n");
+    for (size_t i = 0; i < len; i++) {
+        if (data[i] == '\r') continue;
+        // Print each byte as a character
+        printf("%c", data[i]);
+    }
+    ctx_send_data(ctx, copy, len, NULL);
+}
+
+any_t echo_create_recv_handler(any_t param) {
+    unused(param);
+    EchoReceiver *echo = (EchoReceiver *) malloc(sizeof (EchoReceiver));
+    return echo;
+}
+
+void echo_destroy_recv_handler(any_t handler) {
+    EchoReceiver *echo = (EchoReceiver *) handler;
+    if (echo != NULL) {
+         free(echo);
+    }
+}
+
+svc_handler_t * new_echo_svc_handler() {
+    svc_handler_t* handler = (svc_handler_t *) malloc(sizeof(svc_handler_t));
+    if (handler == NULL) {
+        return NULL;
+    }
+
+    handler->create_param = NULL;
+    handler->create_recv_handler = echo_create_recv_handler;
+    handler->destroy_recv_handler = echo_destroy_recv_handler;
+    handler->recv_handle = echo_recv;
+
+    return handler;
+}
+
+/*
+ * ###################
+ * # TCP CONNECTIONS
+ * ###################
+ */
+
+void ctx_send_data(context_t ctx, char *data, size_t len, on_send_cb on_send) {
+    uv_write_t *write_req = (uv_write_t *) malloc(sizeof(uv_write_t));
+    if (write_req == NULL) {
+        conn_close(ctx.conn);
+        return;
+    }
+
+    send_context_t *sc = (send_context_t *) malloc(sizeof (send_context_t));
+    sc->send_cb = on_send;
+    sc->conn = ctx.conn;
+
+    if (ctx.conn->tls != NULL) {
+        char *encrypted_data = NULL;
+        size_t encrypted_data_len = 0;
+        int result = tls_encrypt(ctx.conn, data, len, &encrypted_data, &encrypted_data_len);
+        if (result != TLS_IO_RESULT_OK) {
+            free(sc);  // Free the send context
+            free(write_req);
+            free(data);  // Free original data if necessary
+            conn_close(ctx.conn);
+            if (encrypted_data != NULL) {
+                free(encrypted_data);
+            }
+            return;
+        }
+
+        free(data);
+        sc->buffer = uv_buf_init(encrypted_data, (unsigned int)encrypted_data_len);
+    } else {
+        sc->buffer = uv_buf_init(data, (unsigned int) len);
+    }
+
+    write_req->data = sc;
+    int write_status = uv_write(write_req, (uv_stream_t *) &ctx.conn->handle, &sc->buffer, 1, uv_on_send_data);
+    if (write_status) {
+        dzlog_warn("uv_write failed: %s\n", uv_strerror(write_status));
+    }
+}
+
+void ctx_close(context_t ctx) {
+    conn_close(ctx.conn);
+}
+
+/**
+ * @brief Frees the Client structure and releases associated resources.
+ *
+ * This function frees the Client structure and releases resources allocated
+ * for the parser, buffer, file name, and SSL context. It also sets the pointer
+ * to the Client structure to NULL.
+ *
+ * @param client The Client structure to be freed.
+ */
+void client_free(Client *client) {
+    if (client == NULL) {
+        return;
+    }
+
+    if (client->recv_handler != NULL && client->destroy_recv_handler != NULL) {
+        client->destroy_recv_handler(client->recv_handler);
+    }
+
+    conn_free(client->conn);
+
+    free(client);
+    client = NULL;
+}
+
+/**
+ * @brief Creates an instance of ClientConn
+ *
+ * @return Pointer to ClientConn struct
+ */
+ClientConn *conn_new() {
+    ClientConn *conn = (ClientConn*) malloc(sizeof(ClientConn ));
+    return conn;
+}
+
+/**
+ * @brief Calls uv_close on ClientConn handler field.
+ *
+ * @param conn The ClientConn.
+ */
+void conn_close(ClientConn *conn) {
+    uv_close((uv_handle_t *) &conn->handle, uv_on_client_close);
+}
+
+/**
+ * @brief Frees the ClientConn structure and releases associated resources.
+ *
+ * @param client The Client structure to be freed.
+ */
+void conn_free(ClientConn *conn) {
+    if (conn->tls != NULL) {
+        tls_session_free(conn->tls);
+        conn->tls = NULL;
+    }
+
+    free(conn);
+    conn = NULL;
+}
+
+/**
+ * @brief Creates a new instance of Client.
+ *
+ * This function allocates memory for an instance of Client and initializes its members.
+ *
+ * @return Pointer to the newly created Client instance, or NULL if memory allocation fails.
+ */
+Client *client_new() {
+    Client *client = (Client *) malloc(sizeof(Client));
+    if (client == NULL) {
+        return NULL;
+    }
+    client->conn = conn_new();
+    return client;
+}
+
+/**
+ * @brief Creates a new instance of Client.
+ *
+ * This function allocates memory for an instance of Client and initializes its members.
+ *
+ * @return Pointer to the newly created Client instance, or NULL if memory allocation fails.
+ */
+void conn_flush(ClientConn *conn) {
+    if (conn->tls != NULL){
+        size_t data_len = (size_t) BIO_pending(conn->tls->write);
+        if (data_len == 0) {
+            return;
+        }
+
+        uv_write_t *write_req = (uv_write_t *) malloc(sizeof(uv_write_t));
+        if (write_req == NULL) {
+            conn_close(conn);
+            return;
+        }
+
+        char *data = (char *) malloc(data_len);
+        if (data == NULL) {
+            free(write_req);
+            return;
+        }
+
+        int read_len = BIO_read(conn->tls->write, data, (int) data_len);
+        if (read_len < 0) {
+            free(write_req);
+            free(data);
+            conn_close(conn);
+        }
+
+        send_context_t *sc = (send_context_t *) malloc(sizeof (send_context_t));
+        sc->send_cb = NULL;
+        sc->buffer = uv_buf_init((char *) data, data_len);
+        sc->conn = conn;
+
+        write_req->data = sc;
+        uv_write(write_req, (uv_stream_t *) &conn->handle, &sc->buffer, 1, uv_on_send_data);
+    }
+}
+
+/**
+ * @brief Encrypt data into out.
+ *
+ * @return TLS_IO_RESULT_OK on success.
+ * @return TLS_IO_RESULT_ERROR on error.
+ */
+int tls_encrypt(ClientConn *conn, const char *data, size_t data_len, char **out, size_t *out_len) {
+    size_t total_written = 0;
+    while(total_written < data_len) {
+        int written = SSL_write(conn->tls->ssl, data + total_written, (int) (data_len - total_written));
+        if (written <= 0) {
+            int ssl_error = SSL_get_error(conn->tls->ssl, written);
+            if (ssl_error == SSL_ERROR_WANT_WRITE) {
+                continue;
+            }
+            unsigned long ssl_error_code = ERR_get_error();
+            char ssl_error_str[256];
+            ERR_error_string_n(ssl_error_code, ssl_error_str, sizeof(ssl_error_str));
+            fprintf(stderr, "SSL write error: code=%d details=%s\n", ssl_error, ssl_error_str);
+            return TLS_IO_RESULT_ERROR;
+        }
+        total_written += (size_t) written;
+    }
+
+    *out_len = (size_t) BIO_pending(conn->tls->write);
+    if (*out_len > 0) {
+        *out = (char *) malloc(*out_len);
+        int bytes_read = BIO_read(conn->tls->write, *out, (int) *out_len);
+        if (bytes_read <= 0) {
+            dzlog_error("BIO_read failed: %d\n", bytes_read);
+            free(*out);
+            return TLS_IO_RESULT_ERROR;
+        }
+        *out_len = (size_t) bytes_read;
+    }
+    return TLS_IO_RESULT_OK;
+}
+
+/**
+ * @brief Decrypt data into out.
+ *
+ * @return TLS_IO_RESULT_OK on success.
+ * @return TLS_IO_RESULT_NEED_MORE_DATA if TLS record is incomplete.
+ */
+int tls_decrypt(ClientConn *conn, const char *data, size_t data_len, char **out, size_t *out_len) {
+    // Write incoming data to the read BIO
+    int result = BIO_write(conn->tls->read, data, (int) data_len);
+    if (result <= 0) {
+        return TLS_IO_RESULT_ERROR;  // Error writing to the read BIO
+    }
+
+    // Buffer to read decrypted data from SSL layer
+    size_t buf_size = 1024;
+    char *buf = malloc(buf_size);
+    if (buf == NULL) {
+        return TLS_IO_RESULT_ERROR;  // Memory allocation failure
+    }
+
+    while (true) {
+        int read = SSL_read(conn->tls->ssl, buf, (int) buf_size);
+        if (read <= 0) {
+            int ssl_error = SSL_get_error(conn->tls->ssl, read);
+            switch (ssl_error) {
+                case SSL_ERROR_WANT_READ:
+                    free(buf);
+                    if (SSL_is_init_finished(conn->tls->ssl)) {
+                        return TLS_IO_RESULT_OK;
+                    }
+                    conn_flush(conn);
+                    return TLS_IO_RESULT_NEED_MORE_DATA;
+                case SSL_ERROR_WANT_WRITE:
+                    free(buf);
+                    conn_flush(conn);
+                    return TLS_IO_RESULT_NEED_MORE_DATA;
+                case SSL_ERROR_ZERO_RETURN:
+                    free(buf);
+
+                    if (SSL_is_init_finished(conn->tls->ssl)) {
+                        return TLS_IO_RESULT_OK;  // Handshake done, clean shutdown
+                    }
+
+                    if (BIO_pending(conn->tls->read) > 0) {
+                        return TLS_IO_RESULT_NEED_MORE_DATA;
+                    }
+
+                    return TLS_IO_RESULT_NO_DATA;  // Connection closed, no more data
+                default:
+                {
+                    unsigned long ssl_error_code = ERR_get_error();
+                    char ssl_error_str[256];
+                    ERR_error_string_n(ssl_error_code, ssl_error_str, sizeof(ssl_error_str));
+                    fprintf(stderr, "SSL read error: code=%d details=%s\n", ssl_error, ssl_error_str);
+                }
+                    free(buf);
+                    if (*out != NULL) {
+                        free(*out);  // Clean up any partially allocated output
+                        *out = NULL;
+                    }
+                    return TLS_IO_RESULT_ERROR;
+            }
+        }
+
+        // Append the decrypted data to the output buffer
+        char *new_result = realloc(*out, *out_len + (size_t) read);
+        if (new_result == NULL) {
+            if (*out != NULL) free(*out);
+            free(buf);
+            return TLS_IO_RESULT_ERROR;  // Memory allocation failure
+        }
+
+        *out = new_result;
+        memcpy(*out + *out_len, buf, (size_t) read);
+        *out_len += (size_t) read;
+    }
+
+    free(buf);
+    return TLS_IO_RESULT_OK;
+}
+
+/**
+ * @brief Callback function called when the connection is closed.
+ *
+ * This function handles freeing the resources associated with the HTTP context and the handle.
+ *
+ * @param handle The handle associated with the connection being closed.
+ */
+void uv_on_client_close(uv_handle_t *handle) {
+    Client *client = (Client *) handle->data;
+    if (client == NULL) {
+        return;
+    }
+    client_free(client);
+    //free(handle);
+}
+
+/**
+ * @brief Callback function for handling HTTP response write.
+ *
+ * This function is called when the write of an HTTP response is complete.
+ * It logs an error if the write was not successful, frees the data associated
+ * with the write request, and frees the write request itself.
+ *
+ * @param req   The uv_write_t structure representing the write request.
+ * @param status    The status code indicating the success or failure of the write operation.
+ *
+ * @remarks The specified req->data is expected to be a pointer to the data associated with the write request.
+ *          If req->data is not NULL, this function frees the memory allocated for this data and sets req->data to NULL.
+ *          The function also frees the memory allocated for the write request itself.
+ */
+void uv_on_send_data(uv_write_t *req, int status) {
+    send_context_t *sc = (send_context_t *) req->data;
+    if (status) {
+        dzlog_error("conn data write failed: %s", uv_strerror(status));
+    }
+
+    on_send_cb on_send = sc->send_cb;
+    Client *client = (Client *) sc->conn->handle.data;
+
+    free(sc->buffer.base);
+    free(sc);
     free(req);
+
+    if (on_send != NULL) {
+        context_t ctx = {.conn = client->conn};
+        send_info_t  info = {};
+        on_send(ctx, info);
+    }
 }
 
 /**
@@ -3741,200 +3952,47 @@ void uv_on_file_uploaded(uv_fs_t *req) {
  * @param buf_size The size of the buffer containing the request
  * @param buf The buffer containing the request
  */
-void uv_on_client_data(uv_stream_t *handle, ssize_t buf_size, const uv_buf_t *buf) {
+void uv_on_receive_data(uv_stream_t *handle, ssize_t buf_size, const uv_buf_t *buf) {
     if (buf_size < 0) {
         uv_close((uv_handle_t *) handle, uv_on_client_close);
         return;
     }
 
     Client *client = (Client *) handle->data;
-
-    char *data = NULL;
-    size_t data_len = 0;
-    int result = uv_tls_decrypt(client, buf->base, buf_size, &data, &data_len);
-    if (result != DECRYPT_RESULT_OK) {
-        switch (result) {
-            case DECRYPT_RESULT_NEED_MORE_DATA:
-                return;
-            case DECRYPT_RESULT_SHOULD_WRITE_DATA:
-                uv_tls_send_written(client);
-                return;
-            default:
-                uv_close((uv_handle_t *) handle, uv_on_client_close);
-                return;
-        }
-    }
-
-    int data_index = 0;
-    if ((data_index = http_parse(client->parser, data, data_len)) < 0) {
+    if (client->recv_cb == NULL) {
+        dzlog_warn("no data handler available");
         uv_close((uv_handle_t *) handle, uv_on_client_close);
         return;
     }
 
-    if (client->parser->state != PARSE_BODY) {
-        return;
-    }
+    context_t ctx = {
+        .conn = client->conn,
+        .recv_handler = client->recv_handler,
+    };
 
-    HTTPObject *r = client->parser->r;
-    const char *method = http_request_method(r);
-    const char *uri = http_request_uri(r);
-
-    // Validating the URI
-    if (strstr(uri, "..") != NULL) {
-        dzlog_error("uri contains '..'");
-        HTTPObject *rsp = http_response(HTTP_STATUS_BAD_REQUEST, "BAD REQUEST");
-        char *raw_rsp = http_raw(rsp);
-        uv_client_send(client, raw_rsp, strlen(raw_rsp));
-        http_object_free(rsp);
-        uv_close((uv_handle_t *) handle, uv_on_client_close);
-        return;
-    }
-
-    const char *c = uri;
-    int slash_count = 0;
-    while (*c != '\0') {
-        if ((*c != '/' && !isalnum(*c) && *c != '.' && *c != '-') || (*c == '/' && slash_count > 1)) {
-            HTTPObject *rsp = http_response(HTTP_STATUS_BAD_REQUEST, "BAD REQUEST");
-            char *raw_rsp = http_raw(rsp);
-            uv_client_send(client, raw_rsp, strlen(raw_rsp));
-            http_object_free(rsp);
-            uv_close((uv_handle_t *) handle, uv_on_client_close);
-            return;
-        }
-        if (*c == '/') slash_count++;
-        c++;
-    }
-
-    if (strcmp(method, HTTP_METHOD_GET) == 0) {
-        if (strcmp(uri, "/favicon.ico") == 0) {
-            HTTPObject *rsp = http_response("404", "NOT FOUND");
-            char *raw_rsp = http_raw(rsp);
-            uv_client_send(client, raw_rsp, strlen(raw_rsp));
-            http_object_free(rsp);
-            uv_close((uv_handle_t *) handle, uv_on_client_close);
-            return;
-        }
-
-        if (http_get_content_range(client->parser->r, &client->range) != 0) {
-            HTTPObject *rsp = http_response("404", "NOT FOUND");
-            char *raw_rsp = http_raw(rsp);
-            uv_client_send(client, raw_rsp, strlen(raw_rsp));
-            http_object_free(rsp);
-            uv_close((uv_handle_t *) handle, uv_on_client_close);
-            return;
-        }
-
-        int pull_file_result;
-        bool downloaded = false;
-
-        if ((pull_file_result = fs_node_pull_storage_file(client->fs_node, uri, &downloaded)) != 0) {
-            HTTPObject *rsp = NULL;
-            switch (pull_file_result) {
-                case FS_NODE_ERROR_FILE_NOT_FOUND:
-                case FS_NODE_ERROR_S3_FILE_NOT_FOUND:
-                    rsp = http_response(HTTP_STATUS_NOT_FOUND, "NOT FOUND");
-                    break;
-                case FS_NODE_ERROR_S3_CANNOT_CONNECT:
-                    rsp = http_response(HTTP_STATUS_SERVICE_UNAVAILABLE, "SERVICE UNAVAILABLE");
-                    break;
-                case FS_NODE_ERROR_S3_QUEUE_FULL:
-                    rsp = http_response(HTTP_STATUS_TOO_MANY_REQUESTS, "TOO MANY REQUESTS");
-                    break;
-                case FS_NODE_ERROR_S3_FILE_BEING_DOWNLOADED:
-                    rsp = http_retry_response(FS_NODE_CLIENT_RETRY_AFTER_IN_SECONDS);
-                    break;
+    if (client->conn->tls != NULL) {
+        char *plain_data = NULL;
+        size_t plain_data_len = 0;
+        int result = tls_decrypt(client->conn, buf->base, buf_size, &plain_data, &plain_data_len);
+        if (result != TLS_IO_RESULT_OK) {
+            switch (result) {
+                case TLS_IO_RESULT_NEED_MORE_DATA:
+                case TLS_IO_RESULT_NO_DATA:
+                    return;
                 default:
-                    rsp = http_response(HTTP_STATUS_INTERNAL, "INTERNAL SERVER ERROR");
-                    break;
+                    uv_close((uv_handle_t *) handle, uv_on_client_close);
+                    return;
             }
-            char *raw_rsp = http_raw(rsp);
-            uv_client_send(client, raw_rsp, strlen(raw_rsp));
-            http_object_free(rsp);
-            uv_close((uv_handle_t *) handle, uv_on_client_close);
-            return;
         }
 
-        if (downloaded) {
-            uv_work_t *req = (uv_work_t *) malloc(sizeof(uv_work_t));
-            req->data = client->fs_node;
-            uv_queue_work(uv_default_loop(), req, task_prune_work, task_after_prune);
-        }
-
-        client->file_fullname = fs_node_full_path(client->fs_node, uri);
-        if (client->file_fullname == NULL) {
-            uv_close((uv_handle_t *) handle, uv_on_client_close);
+        if (plain_data_len == 0) {
             return;
         }
-
-        uv_fs_t *file = (uv_fs_t *) malloc(sizeof(uv_fs_t));
-        if (file == NULL) {
-            uv_close((uv_handle_t *) handle, uv_on_client_close);
-            return;
-        }
-        file->data = client;
-        uv_fs_open(uv_default_loop(), file, client->file_fullname, O_RDONLY, 0, uv_on_file_opened);
-        return;
+        client->recv_cb(ctx, plain_data, plain_data_len);
+        free(plain_data);
+    } else {
+        client->recv_cb(ctx, buf->base, buf_size);
     }
-
-    if (strcmp(method, HTTP_METHOD_PUT) == 0) {
-        if (client->file_fullname == NULL) {
-            client->file_fullname = fs_node_full_path(client->fs_node, uri);
-            if (client->file_fullname == NULL) {
-                uv_close((uv_handle_t *) handle, uv_on_client_close);
-                return;
-            }
-
-            client->upload_dst_open_req = (uv_fs_t *) malloc(sizeof(uv_fs_t));
-            if (client->upload_dst_open_req == NULL) {
-                free(client->file_fullname);
-                uv_close((uv_handle_t *) handle, uv_on_client_close);
-                return;
-            }
-
-            client->upload_dst = uv_fs_open(uv_default_loop(), client->upload_dst_open_req, client->file_fullname, O_WRONLY | O_CREAT | O_TRUNC, 0644, NULL);
-
-            if (client->upload_dst < 0) {
-                HTTPObject *rsp = http_response(HTTP_STATUS_INTERNAL, "INTERNAL SERVER ERROR");
-                char *raw_rsp = http_raw(rsp);
-                uv_client_send(client, raw_rsp, strlen(raw_rsp));
-                http_object_free(rsp);
-                uv_close((uv_handle_t *) handle, uv_on_client_close);
-                return;
-            }
-
-        }
-
-        uv_fs_t *write_req = (uv_fs_t *) malloc(sizeof(uv_fs_t));
-        uv_buf_t wrbuf = uv_buf_init(buf->base + data_index, buf_size - data_index);
-        uv_fs_write(uv_default_loop(), write_req, client->upload_dst, &wrbuf, 1, -1, uv_on_file_uploaded);
-        client->uploaded_bytes_count += buf_size - data_index;
-
-        if (buf_size == 0 || client->uploaded_bytes_count == client->parser->r->content_length) {
-            uv_fs_close(uv_default_loop(), client->upload_dst_open_req, client->upload_dst_open_req->file, NULL);
-
-            HTTPObject *rsp = http_response(HTTP_STATUS_OK, "OK");
-            char *raw_rsp = http_raw(rsp);
-            uv_client_send(client, raw_rsp, strlen(raw_rsp));
-            http_object_free(rsp);
-            uv_close((uv_handle_t *) handle, uv_on_client_close);
-            return;
-        }
-        return;
-    }
-
-    if (strcmp(method, HTTP_METHOD_DELETE) == 0) {
-        if (fs_node_delete_file(client->fs_node, uri) != 0) {
-            HTTPObject *rsp = http_response("500", "INTERNAL SERVER ERROR");
-            char *raw_rsp = http_raw(rsp);
-            uv_client_send(client, raw_rsp, strlen(raw_rsp));
-            http_object_free(rsp);
-            uv_close((uv_handle_t *) handle, uv_on_client_close);
-            return;
-        }
-        return;
-    }
-
-    uv_close((uv_handle_t *) handle, uv_on_client_close);
 }
 
 /**
@@ -3950,9 +4008,11 @@ void uv_on_client_data(uv_stream_t *handle, ssize_t buf_size, const uv_buf_t *bu
  *             The allocated buffer is stored in the `base` field and the size in the `len` field.
  */
 void uv_on_alloc_buffer(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf) {
-    if (suggested_size < TLS_RECORD_MAX_SIZE) {
+    Client *client = (Client *) handle->data;
+    if (client->conn->tls != NULL && suggested_size < TLS_RECORD_MAX_SIZE) {
         suggested_size = TLS_RECORD_MAX_SIZE;
     }
+
     char *buffer = (char *) malloc(suggested_size);
     if (buffer == NULL) {
         uv_close((uv_handle_t *) handle, uv_on_client_close);
@@ -3978,36 +4038,41 @@ void uv_on_new_client(uv_stream_t *server, int status) {
         return;
     }
 
-    FSNode *fs_node = (FSNode *) server->data;
+    Server* svc = (Server *) server->data;
 
     Client *client = client_new();
-    if (client == NULL || uv_tcp_init(server->loop, &client->handle) != 0) {
-        uv_close((uv_handle_t *) &client->handle, uv_on_client_close);
+    if (client == NULL || uv_tcp_init(server->loop, &client->conn->handle) != 0) {
+        uv_close((uv_handle_t *) &client->conn->handle, uv_on_client_close);
         return;
     }
 
-    if (uv_accept(server, (uv_stream_t *) &client->handle) == 0) {
-        client->fs_node = fs_node;
-        client->handle.data = client;
-        client->tls = tls_session_new(fs_node->ssl_server_ctx);
-        if(client->tls == NULL) {
-            tls_session_free(client->tls);
-            ERR_print_errors_fp(stderr);
-            uv_close((uv_handle_t *) &client->handle, uv_on_client_close);
+    if (uv_accept(server, (uv_stream_t *) &client->conn->handle) == 0) {
+        if (client->conn == NULL) {
+            uv_close((uv_handle_t *) &client->conn->handle, uv_on_client_close);
             return;
         }
-        uv_read_start((uv_stream_t *) &client->handle, uv_on_alloc_buffer, uv_on_client_data);
+
+        if (svc->ssl_ctx != NULL) {
+            client->conn->tls = tls_session_new(svc->ssl_ctx);
+            if (client->conn->tls == NULL) {
+                ERR_print_errors_fp(stderr);
+                uv_close((uv_handle_t *) &client->conn->handle, uv_on_client_close);
+                return;
+            }
+        }
+
+        client->recv_cb = svc->svc_handler->recv_handle;
+        client->recv_handler = svc->svc_handler->create_recv_handler(svc->svc_handler->create_param);
+        client->destroy_recv_handler = svc->svc_handler->destroy_recv_handler;
+
+        client->conn->handle.data = client;
+        uv_read_start((uv_stream_t *) &client->conn->handle, uv_on_alloc_buffer, uv_on_receive_data);
     } else {
-        uv_close((uv_handle_t *) &client->handle, uv_on_client_close);
+        uv_close((uv_handle_t *) &client->conn->handle, uv_on_client_close);
         client_free(client);
     }
 }
 
-/*
- * ###################
- * # SERVICE RUNNER
- * ###################
- */
 /**
  * @brief Start serving connections on the specified server.
  *
@@ -4028,7 +4093,7 @@ int svc_serve(Server *server, uv_connection_cb on_connection) {
         return status;
     }
 
-    server->tcp.data = server->node;
+    server->tcp.data = server;
 
     uv_tcp_bind(&server->tcp, (const struct sockaddr *) &sa, 0);
     int result = uv_listen((uv_stream_t *) &server->tcp, 1024, on_connection);
@@ -4051,7 +4116,7 @@ int main(void) {
     if (!log_c) {
         printf("zlog get category failed\n");
         zlog_fini();
-        return -2;
+        return -1;
     }
 
     OpenSSL_add_all_algorithms();
@@ -4089,20 +4154,22 @@ int main(void) {
     fs_node_get_disk_usage(node->disk->dir, &node->disk->usage);
     fs_node_publish_info(node);
 
-    Server *http = malloc(sizeof(Server));
-    http->node = node;
-    http->port = node->info->port;
-    http->name = "http";
-    if (svc_serve(http, uv_on_new_client) != 0) {
+    Server *svc = malloc(sizeof(Server));
+    svc->port = node->info->port;
+    svc->name = "http";
+    svc->ssl_ctx = node->ssl_server_ctx;
+    svc->svc_handler = new_echo_svc_handler();
+
+    if (svc_serve(svc, uv_on_new_client) != 0) {
         dzlog_info("failed to run HTTP service");
         fs_node_free(node);
-        free(http);
+        free(svc);
         return 1;
     }
 
     uv_run(uv_default_loop(), UV_RUN_DEFAULT);
 
     fs_node_free(node);
-    free(http);
+    free(svc);
     return 0;
 }
