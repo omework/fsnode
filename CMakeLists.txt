@@ -19,6 +19,31 @@ include_directories("/opt/homebrew/Cellar/zlog/1.2.18/include")
 add_executable(fsnode
         main.c
         include/fsnode.h
+        include/env.h
+        include/map.h
+        include/list.h
+        include/crypto.h
+        include/utils.h
+        include/http.h
+        include/conn.h
+        include/aws.h
+        include/server.h
+        include/echo.h
+        include/cdn.h
+        src/map.c
+        src/env.c
+        src/utils.c
+        src/crypto.c
+        src/crypto.c
+        src/list.c
+        src/http.c
+        src/http.c
+        src/conn.c
+        src/aws.c
+        src/server.c
+        src/fsnode.c
+        src/echo.c
+        src/cdn.c
 )
 
 find_library(LIBMAGIC NAMES magic)

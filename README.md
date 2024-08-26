@@ -12,9 +12,10 @@
 
 - **RSA Key Pair Generation and CSR Creation**: Generates an RSA key pair and creates a Certificate Signing Request (CSR).
 - **Certificate Signing**: Sends the CSR to a Certificate Authority (CA) to obtain a signed certificate.
-- **Secure Connections**: (Future implementation) Will support secure connections.
+- **Secure Connections**: Secure connection using TLS.
 - **Chunked File Serving**: Serves file content in chunks using HTTP partial content for efficient streaming.
 - **S3 Bucket Integration**: Downloads requested files from an AWS S3 bucket to local disk if they are not already present.
+- **S3 Object parallel download**: (Future implementation) Download S3 object parts in parallel.
 - **Disk Management**: Initiates a disk prune task whenever the local disk content reaches a specified limit.
 - **Cluster Operation**: Operates in a cluster where all nodes are part of the same logical disk. The master node can sum up all available space across `fsnode` instances and dispatch requests to nodes with the least load.
 

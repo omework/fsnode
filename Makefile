@@ -1,11 +1,11 @@
 # Compiler
-CC = clang
+CC = zig cc
 
 # Compiler flags
-CFLAGS = -std=c11 -Wall -Wextra -Werror
+CFLAGS = -std=c23 -Wall -Wextra -Werror
 
 # Debugging flags
-DEBUG_FLAGS = -std=c11 -Wall -Wextra -Werror -g
+DEBUG_FLAGS = -std=c23 -Wall -Wextra -Werror -g
 
 # Detect platform
 UNAME_S := $(shell uname -s)
@@ -66,7 +66,19 @@ LIBS = \
     -lcrypto
 
 # Source files
-SRCS = main.c
+SRCS = main.c \
+       src/map.c \
+       src/env.c \
+       src/utils.c \
+       src/crypto.c \
+       src/list.c \
+       src/http.c \
+       src/conn.c \
+       src/aws.c \
+       src/server.c \
+       src/fsnode.c \
+       src/echo.c \
+       src/cdn.c
 
 # Object files
 OBJS = $(SRCS:.c=.o)
