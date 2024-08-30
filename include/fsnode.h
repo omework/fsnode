@@ -39,7 +39,7 @@
 #define MB (KB * 1024)
 #define GB (MB * 1024)
 
-#define FILE_CHUNK_SIZE (1*MB)
+#define FILE_CHUNK_SIZE (128*KB)
 
 duckdb_timestamp db_timestamp_from_time(struct tm *tm);
 
@@ -141,11 +141,11 @@ typedef struct {
 } Node;
 
 typedef struct {
-    FILE *handle;
+    FILE *fd;
     char *path;
     char *mime_type;
     size_t size;
-    size_t limit;
+    size_t offset;
     size_t available;
 } File;
 
@@ -207,7 +207,7 @@ int fs_node_get_oldest_file_from_registry(FSNode *node, List *names);
 
 int fs_node_delete_file_from_registry(FSNode *node, const char *filename);
 
-int fs_node_get_file(FSNode *node, const char *filename, read_options_t *opts, File *out);
+int fs_node_get_file(FSNode *node, const char *filename, read_options_t opts, File **file);
 
 int fs_node_delete_file(FSNode *node, const char *filepath);
 

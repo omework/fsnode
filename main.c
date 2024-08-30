@@ -2,18 +2,19 @@
 #include "env.h"
 #include "server.h"
 #include "echo.h"
+#include "cdn.h"
 
 int main(void) {
     if (dzlog_init("zlog.conf", "fsnode")) {
         printf("zlog initialization failed\n");
-        return -1;
+        return 1;
     }
 
     zlog_category_t *log_c = zlog_get_category("fsnode");
     if (!log_c) {
         printf("zlog get category failed\n");
         zlog_fini();
-        return -1;
+        return 1;
     }
 
     OpenSSL_add_all_algorithms();
@@ -58,7 +59,7 @@ int main(void) {
     svc->port = node->info->port;
     svc->name = "http";
     svc->ssl_ctx = node->ssl_server_ctx;
-    svc->svc_handler = new_echo_svc_handler();
+    svc->svc_handler = new_http_svc_handler(node);
 
     if (svc_serve(svc, uv_on_new_client) != 0) {
         dzlog_info("failed to run HTTP service");

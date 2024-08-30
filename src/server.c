@@ -3,47 +3,44 @@
 //
 #include "server.h"
 
-void ctx_send_data(context_t ctx, char *data, size_t len, on_send_cb on_send) {
+int client_send_data(Client *client, char *data, size_t len, on_send_cb on_send) {
+
     uv_write_t *write_req = (uv_write_t *) malloc(sizeof(uv_write_t));
     if (write_req == NULL) {
-        conn_close(ctx.conn);
-        return;
+        return 1;
     }
 
-    send_context_t *sc = (send_context_t *) malloc(sizeof (send_context_t));
-    sc->send_cb = on_send;
-    sc->conn = ctx.conn;
-
-    if (ctx.conn->tls != NULL) {
+    uv_buf_t buf;
+    if (client->conn->tls != NULL) {
         char *encrypted_data = NULL;
         size_t encrypted_data_len = 0;
-        int result = tls_encrypt(ctx.conn, data, len, &encrypted_data, &encrypted_data_len);
+        int result = tls_encrypt(client, data, len, &encrypted_data, &encrypted_data_len);
         if (result != TLS_IO_RESULT_OK) {
-            free(sc);  // Free the send context
             free(write_req);
-            free(data);  // Free original data if necessary
-            conn_close(ctx.conn);
             if (encrypted_data != NULL) {
                 free(encrypted_data);
             }
-            return;
+            return 1;
         }
-
-        free(data);
-        sc->buffer = uv_buf_init(encrypted_data, (unsigned int)encrypted_data_len);
+        buf = uv_buf_init(encrypted_data, (unsigned int)encrypted_data_len);
     } else {
-        sc->buffer = uv_buf_init(data, (unsigned int) len);
+        char * copy = (char *) malloc(len);
+        memcpy(copy, data, len);
+        buf = uv_buf_init(copy, (unsigned int) len);
     }
 
-    write_req->data = sc;
-    int write_status = uv_write(write_req, (uv_stream_t *) &ctx.conn->handle, &sc->buffer, 1, uv_on_send_data);
+    client->on_send = on_send;
+    write_req->data = client;
+    int write_status = uv_write(write_req, (uv_stream_t *) &client->conn->handle, &buf, 1, uv_on_send_data);
     if (write_status) {
-        dzlog_warn("uv_write failed: %s\n", uv_strerror(write_status));
+        dzlog_error("uv_write failed: %s\n", uv_strerror(write_status));
+        return 1;
     }
+    return 0;
 }
 
-void ctx_close(context_t ctx) {
-    conn_close(ctx.conn);
+void client_close(Client *client) {
+    uv_close((uv_handle_t *) &client->conn->handle, uv_on_client_close);
 }
 
 /**
@@ -60,8 +57,8 @@ void client_free(Client *client) {
         return;
     }
 
-    if (client->recv_handler != NULL && client->destroy_recv_handler != NULL) {
-        client->destroy_recv_handler(client->recv_handler);
+    if (client->data != NULL && client->svc->destroy_recv_handler != NULL) {
+        client->svc->destroy_recv_handler(client->data);
     }
 
     conn_free(client->conn);
@@ -78,15 +75,6 @@ void client_free(Client *client) {
 ClientConn *conn_new() {
     ClientConn *conn = (ClientConn*) malloc(sizeof(ClientConn ));
     return conn;
-}
-
-/**
- * @brief Calls uv_close on ClientConn handler field.
- *
- * @param conn The ClientConn.
- */
-void conn_close(ClientConn *conn) {
-    uv_close((uv_handle_t *) &conn->handle, uv_on_client_close);
 }
 
 /**
@@ -113,9 +101,6 @@ void conn_free(ClientConn *conn) {
  */
 Client *client_new() {
     Client *client = (Client *) malloc(sizeof(Client));
-    if (client == NULL) {
-        return NULL;
-    }
     client->conn = conn_new();
     return client;
 }
@@ -127,16 +112,16 @@ Client *client_new() {
  *
  * @return Pointer to the newly created Client instance, or NULL if memory allocation fails.
  */
-void conn_flush(ClientConn *conn) {
-    if (conn->tls != NULL){
-        size_t data_len = (size_t) BIO_pending(conn->tls->write);
+void conn_flush(Client *client) {
+    if (client->conn->tls != NULL){
+        size_t data_len = (size_t) BIO_pending(client->conn->tls->write);
         if (data_len == 0) {
             return;
         }
 
         uv_write_t *write_req = (uv_write_t *) malloc(sizeof(uv_write_t));
         if (write_req == NULL) {
-            conn_close(conn);
+            client_close(client);
             return;
         }
 
@@ -146,20 +131,15 @@ void conn_flush(ClientConn *conn) {
             return;
         }
 
-        int read_len = BIO_read(conn->tls->write, data, (int) data_len);
+        int read_len = BIO_read(client->conn->tls->write, data, (int) data_len);
         if (read_len < 0) {
             free(write_req);
             free(data);
-            conn_close(conn);
+            client_close(client);
         }
 
-        send_context_t *sc = (send_context_t *) malloc(sizeof (send_context_t));
-        sc->send_cb = NULL;
-        sc->buffer = uv_buf_init((char *) data, data_len);
-        sc->conn = conn;
-
-        write_req->data = sc;
-        uv_write(write_req, (uv_stream_t *) &conn->handle, &sc->buffer, 1, uv_on_send_data);
+        uv_buf_t buf = uv_buf_init(data, data_len);
+        uv_write(write_req, (uv_stream_t *) &client->conn->handle, &buf, 1, uv_on_send_data);
     }
 }
 
@@ -169,12 +149,12 @@ void conn_flush(ClientConn *conn) {
  * @return TLS_IO_RESULT_OK on success.
  * @return TLS_IO_RESULT_ERROR on error.
  */
-int tls_encrypt(ClientConn *conn, const char *data, size_t data_len, char **out, size_t *out_len) {
+int tls_encrypt(Client *client, const char *data, size_t data_len, char **out, size_t *out_len) {
     size_t total_written = 0;
     while(total_written < data_len) {
-        int written = SSL_write(conn->tls->ssl, data + total_written, (int) (data_len - total_written));
+        int written = SSL_write(client->conn->tls->ssl, data + total_written, (int) (data_len - total_written));
         if (written <= 0) {
-            int ssl_error = SSL_get_error(conn->tls->ssl, written);
+            int ssl_error = SSL_get_error(client->conn->tls->ssl, written);
             if (ssl_error == SSL_ERROR_WANT_WRITE) {
                 continue;
             }
@@ -187,10 +167,10 @@ int tls_encrypt(ClientConn *conn, const char *data, size_t data_len, char **out,
         total_written += (size_t) written;
     }
 
-    *out_len = (size_t) BIO_pending(conn->tls->write);
+    *out_len = (size_t) BIO_pending(client->conn->tls->write);
     if (*out_len > 0) {
         *out = (char *) malloc(*out_len);
-        int bytes_read = BIO_read(conn->tls->write, *out, (int) *out_len);
+        int bytes_read = BIO_read(client->conn->tls->write, *out, (int) *out_len);
         if (bytes_read <= 0) {
             dzlog_error("BIO_read failed: %d\n", bytes_read);
             free(*out);
@@ -207,9 +187,9 @@ int tls_encrypt(ClientConn *conn, const char *data, size_t data_len, char **out,
  * @return TLS_IO_RESULT_OK on success.
  * @return TLS_IO_RESULT_NEED_MORE_DATA if TLS record is incomplete.
  */
-int tls_decrypt(ClientConn *conn, const char *data, size_t data_len, char **out, size_t *out_len) {
+int tls_decrypt(Client *client, const char *data, size_t data_len, char **out, size_t *out_len) {
     // Write incoming data to the read BIO
-    int result = BIO_write(conn->tls->read, data, (int) data_len);
+    int result = BIO_write(client->conn->tls->read, data, (int) data_len);
     if (result <= 0) {
         return TLS_IO_RESULT_ERROR;  // Error writing to the read BIO
     }
@@ -222,29 +202,29 @@ int tls_decrypt(ClientConn *conn, const char *data, size_t data_len, char **out,
     }
 
     while (true) {
-        int read = SSL_read(conn->tls->ssl, buf, (int) buf_size);
+        int read = SSL_read(client->conn->tls->ssl, buf, (int) buf_size);
         if (read <= 0) {
-            int ssl_error = SSL_get_error(conn->tls->ssl, read);
+            int ssl_error = SSL_get_error(client->conn->tls->ssl, read);
             switch (ssl_error) {
                 case SSL_ERROR_WANT_READ:
                     free(buf);
-                    if (SSL_is_init_finished(conn->tls->ssl)) {
+                    if (SSL_is_init_finished(client->conn->tls->ssl)) {
                         return TLS_IO_RESULT_OK;
                     }
-                    conn_flush(conn);
+                    conn_flush(client);
                     return TLS_IO_RESULT_NEED_MORE_DATA;
                 case SSL_ERROR_WANT_WRITE:
                     free(buf);
-                    conn_flush(conn);
+                    conn_flush(client);
                     return TLS_IO_RESULT_NEED_MORE_DATA;
                 case SSL_ERROR_ZERO_RETURN:
                     free(buf);
 
-                    if (SSL_is_init_finished(conn->tls->ssl)) {
+                    if (SSL_is_init_finished(client->conn->tls->ssl)) {
                         return TLS_IO_RESULT_OK;  // Handshake done, clean shutdown
                     }
 
-                    if (BIO_pending(conn->tls->read) > 0) {
+                    if (BIO_pending(client->conn->tls->read) > 0) {
                         return TLS_IO_RESULT_NEED_MORE_DATA;
                     }
 
@@ -259,7 +239,6 @@ int tls_decrypt(ClientConn *conn, const char *data, size_t data_len, char **out,
                     free(buf);
                     if (*out != NULL) {
                         free(*out);  // Clean up any partially allocated output
-                        *out = NULL;
                     }
                     return TLS_IO_RESULT_ERROR;
             }
@@ -277,9 +256,6 @@ int tls_decrypt(ClientConn *conn, const char *data, size_t data_len, char **out,
         memcpy(*out + *out_len, buf, (size_t) read);
         *out_len += (size_t) read;
     }
-
-    free(buf);
-    return TLS_IO_RESULT_OK;
 }
 
 /**
@@ -291,11 +267,7 @@ int tls_decrypt(ClientConn *conn, const char *data, size_t data_len, char **out,
  */
 void uv_on_client_close(uv_handle_t *handle) {
     Client *client = (Client *) handle->data;
-    if (client == NULL) {
-        return;
-    }
     client_free(client);
-    //free(handle);
 }
 
 /**
@@ -313,22 +285,14 @@ void uv_on_client_close(uv_handle_t *handle) {
  *          The function also frees the memory allocated for the write request itself.
  */
 void uv_on_send_data(uv_write_t *req, int status) {
-    send_context_t *sc = (send_context_t *) req->data;
+    Client *client = (Client *) req->data;
     if (status) {
         dzlog_error("conn data write failed: %s", uv_strerror(status));
     }
-
-    on_send_cb on_send = sc->send_cb;
-    Client *client = (Client *) sc->conn->handle.data;
-
-    free(sc->buffer.base);
-    free(sc);
     free(req);
-
-    if (on_send != NULL) {
-        context_t ctx = {.conn = client->conn};
+    if (client != NULL && client->on_send != NULL) {
         send_info_t  info = {};
-        on_send(ctx, info);
+        client->on_send((any_t) client, info);
     }
 }
 
@@ -350,21 +314,20 @@ void uv_on_receive_data(uv_stream_t *handle, ssize_t buf_size, const uv_buf_t *b
     }
 
     Client *client = (Client *) handle->data;
-    if (client->recv_cb == NULL) {
+    if (client->svc == NULL) {
         dzlog_warn("no data handler available");
         uv_close((uv_handle_t *) handle, uv_on_client_close);
         return;
     }
 
-    context_t ctx = {
-            .conn = client->conn,
-            .recv_handler = client->recv_handler,
-    };
+    if (client->data == NULL) {
+        client->data = client->svc->create_recv_handler(client->svc->create_param);
+    }
 
     if (client->conn->tls != NULL) {
-        char *plain_data = NULL;
+        char *plain_data;
         size_t plain_data_len = 0;
-        int result = tls_decrypt(client->conn, buf->base, buf_size, &plain_data, &plain_data_len);
+        int result = tls_decrypt(client, buf->base, buf_size, &plain_data, &plain_data_len);
         if (result != TLS_IO_RESULT_OK) {
             switch (result) {
                 case TLS_IO_RESULT_NEED_MORE_DATA:
@@ -379,10 +342,10 @@ void uv_on_receive_data(uv_stream_t *handle, ssize_t buf_size, const uv_buf_t *b
         if (plain_data_len == 0) {
             return;
         }
-        client->recv_cb(ctx, plain_data, plain_data_len);
+        client->svc->recv_handle(client, plain_data, plain_data_len);
         free(plain_data);
     } else {
-        client->recv_cb(ctx, buf->base, buf_size);
+        client->svc->recv_handle(client, buf->base, buf_size);
     }
 }
 
@@ -400,8 +363,8 @@ void uv_on_receive_data(uv_stream_t *handle, ssize_t buf_size, const uv_buf_t *b
  */
 void uv_on_alloc_buffer(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf) {
     Client *client = (Client *) handle->data;
-    if (client->min_buffer_size > 0 && suggested_size < client->min_buffer_size) {
-        suggested_size = client->min_buffer_size;
+    if (client->conn->tls != NULL && suggested_size < TLS_BUFFER_SIZE) {
+        suggested_size = TLS_BUFFER_SIZE;
     }
 
     char *buffer = (char *) malloc(suggested_size);
@@ -432,7 +395,7 @@ void uv_on_new_client(uv_stream_t *server, int status) {
     Server* svc = (Server *) server->data;
 
     Client *client = client_new();
-    if (client == NULL || uv_tcp_init(server->loop, &client->conn->handle) != 0) {
+    if (uv_tcp_init(server->loop, &client->conn->handle) != 0) {
         uv_close((uv_handle_t *) &client->conn->handle, uv_on_client_close);
         return;
     }
@@ -451,12 +414,9 @@ void uv_on_new_client(uv_stream_t *server, int status) {
                 return;
             }
         }
-
-        client->recv_cb = svc->svc_handler->recv_handle;
-        client->recv_handler = svc->svc_handler->create_recv_handler(svc->svc_handler->create_param);
-        client->destroy_recv_handler = svc->svc_handler->destroy_recv_handler;
-
+        client->svc = svc->svc_handler;
         client->conn->handle.data = client;
+
         uv_read_start((uv_stream_t *) &client->conn->handle, uv_on_alloc_buffer, uv_on_receive_data);
     } else {
         uv_close((uv_handle_t *) &client->conn->handle, uv_on_client_close);

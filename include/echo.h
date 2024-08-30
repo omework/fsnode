@@ -19,7 +19,7 @@ typedef struct {
     Client *client;
 } EchoSender;
 
-void echo_recv(context_t ctx, const char *data, size_t len);
+void echo_recv(any_t a, const char *data, size_t len);
 
 any_t echo_create_recv_handler(any_t param);
 

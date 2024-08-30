@@ -911,9 +911,9 @@ void fs_file_free(File *file) {
         file->path = NULL;
     }
 
-    if (file->handle != NULL) {
-        fclose(file->handle);
-        file->handle = NULL;
+    if (file->fd != NULL) {
+        fclose(file->fd);
+        file->fd = NULL;
     }
 
     if (file->mime_type != NULL) {
@@ -933,59 +933,92 @@ char *fs_node_full_path(FSNode *node, const char *filepath) {
     return full_path;
 }
 
-int fs_node_get_file(FSNode *node, const char *filename, read_options_t *opts, File *out) {
-    char *full_path = fs_node_full_path(node, filename);
-    if (full_path == NULL) {
+int fs_node_get_file(FSNode *node, const char *filename, read_options_t opts, File **file) {
+    char *path = fs_node_full_path(node, filename);
+    if (path == NULL) {
         return 1;
     }
 
-    const char *mime = magic_file(node->magic_cookie, full_path);
-    out->mime_type = strdup(mime);
+    const char *mime = magic_file(node->magic_cookie, path);
+    char *mime_type = strdup(mime);
 
-    FILE *file;
-    while ((file = fopen(full_path, "r")) == NULL) {
+    FILE *fd;
+    while ((fd = fopen(path, "r")) == NULL) {
         if (errno != ENOENT || fs_node_download_file_from_storage(node, filename) != 0) {
-            free(full_path);
+            free(path);
+            free(mime_type);
             return 1;
         }
     }
-    free(full_path);
 
     // handle offset and limit
-    int res = fseek(file, 0L, SEEK_END);
+    int res = fseek(fd, 0L, SEEK_END);
     if (res < 0) {
+        free(path);
+        free(mime_type);
         return 1;
     }
-    out->size = ftell(file);
+    size_t size = (size_t) ftell(fd);
 
-    if (opts->max_chunk_size == 0 || opts->max_chunk_size > out->size) {
-        opts->max_chunk_size = out->size;
+    res = fseek(fd, 0, SEEK_SET);
+    if (res < 0) {
+        free(path);
+        free(mime_type);
+        return 1;
     }
 
-    if (opts->limit == -1 && opts->offset == -1) {
-        out->available = (long) (opts->max_chunk_size);
-        if (out->available > out->size) {
-            out->available = out->size;
-        }
+    size_t available, offset;
+    size_t max_available_content = opts.max_chunk_size;
+    if (max_available_content == 0 || max_available_content > size) {
+        max_available_content = size;
+    }
 
-    } else if (opts->limit == - 1) {
-        res = fseek(file, (long) opts->offset, SEEK_SET);
+    if (opts.limit <= 0 && opts.offset <= 0) {
+        offset = 0;
+        available = (long) max_available_content;
+
+    } else if (opts.limit <= 0) {
+        res = fseek(fd, (long) opts.offset, SEEK_SET);
         if (res < 0) {
-            fclose(file);
+            fclose(fd);
+            free(path);
+            free(mime_type);
             return 1;
         }
-        out->available = opts->max_chunk_size;
-        out->limit = opts->max_chunk_size - 1;
+        available = max_available_content;
+        offset = opts.offset;
+        if (opts.offset + available > size) {
+            available = size - opts.offset;
+        }
+
     } else {
-        if (fseek(file, -1 * ((long) opts->limit), SEEK_END) != 0) {
-            fclose(file);
+        if (opts.limit > (long) max_available_content) {
+            opts.limit = (long) max_available_content;
+        }
+        if (fseek(fd, -1 * ((long) opts.limit), SEEK_END) != 0) {
+            fclose(fd);
+            free(path);
+            free(mime_type);
             return 1;
         }
-        out->limit = out->size - 1;
-        out->available = (long) opts->limit;
+        available = (long) opts.limit;
+        offset = (long) size - available;
     }
 
-    out->handle = file;
+    *file = (File *) malloc(sizeof(File));
+    if (*file == NULL) {
+        fclose(fd);
+        free(path);
+        free(mime_type);
+        return 1;
+    }
+
+    (*file)->fd = fd;
+    (*file)->path = path;
+    (*file)->mime_type = mime_type;
+    (*file)->available = available;
+    (*file)->offset = offset;
+    (*file)->size = size;
     return 0;
 }
 

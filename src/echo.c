@@ -5,7 +5,7 @@
 #include "echo.h"
 
 
-void echo_recv(const context_t ctx, const char *data, size_t len) {
+void echo_recv(any_t a, const char *data, size_t len) {
     char * copy = (char *) malloc(len);
     memcpy(copy, data, len);
     printf("received: \n");
@@ -14,7 +14,11 @@ void echo_recv(const context_t ctx, const char *data, size_t len) {
         // Print each byte as a character
         printf("%c", data[i]);
     }
-    ctx_send_data(ctx, copy, len, NULL);
+
+    Client *client = (Client *) a;
+    if (client_send_data(client, copy, len, NULL) != 0) {
+        client_close(client);
+    }
 }
 
 any_t echo_create_recv_handler(any_t param) {

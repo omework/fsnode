@@ -153,11 +153,12 @@ void http_header_set(HTTPObject *r, char *name, char *value) {
 int http_parse_content_range(const char *header, Range *range) {
     const char* pos = header;
     if (pos == NULL) {
-        range->type = range_unspecified;
-        range->offset = -1;
-        range->limit = -1;
         return 0;
     }
+
+    range->type = range_unspecified;
+    range->offset = 0;
+    range->limit = 0;
 
     while (*pos != '=') pos++;
     pos++;
@@ -349,7 +350,7 @@ int http_parse(HTTPParser *parser, const char *buffer, size_t data_len) {
             http_header_set(r, parser->header_name, trimmed);
             if (strcasecmp(parser->header_name, HTTP_HEADER_CONTENT_LENGTH) == 0) {
                 parser->r->has_content_length = str_to_size_t(trimmed, &parser->r->content_length) == 0;
-            } else if (strcasecmp(parser->header_name, HTTP_HEADER_CONTENT_LENGTH) == 0) {
+            } else if (strcasecmp(parser->header_name, HTTP_HEADER_RANGE) == 0) {
                 if (http_parse_content_range(trimmed, &parser->r->range) != 0) {
                     return -1;
                 }
