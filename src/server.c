@@ -289,10 +289,13 @@ void uv_on_send_data(uv_write_t *req, int status) {
     if (status) {
         dzlog_error("conn data write failed: %s", uv_strerror(status));
     }
+
     free(req);
     if (client != NULL && client->on_send != NULL) {
+        on_send_cb  on_send = client->on_send;
+        client->on_send = NULL;
         send_info_t  info = {};
-        client->on_send((any_t) client, info);
+        on_send((any_t) client, info);
     }
 }
 

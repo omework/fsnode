@@ -10,13 +10,17 @@
 #include "server.h"
 #include "http.h"
 
-#define BUFFER_SIZE (150*KB)
+#define MEDIA_MAX_SIZE (2 * MB)
+
+#define BUFFER_SIZE (100*KB)
 
 typedef struct {
     HTTPParser *parser;
     HTTPObject *request;
     Client *client;
     FSNode *fsNode;
+    File *file;
+    size_t body_sent;
 } http_ctx_t;
 
 int http_send_data(http_ctx_t *ctx, char *data, size_t len);
@@ -24,6 +28,12 @@ int http_send_data(http_ctx_t *ctx, char *data, size_t len);
 void http_write_response(http_ctx_t *hc, HTTPObject *rsp);
 
 void http_send_response_headers(http_ctx_t *ctx, HTTPObject *rsp);
+
+void on_file_chunk_sent (any_t a, send_info_t info);
+
+int http_send_partial_data(http_ctx_t *ctx, char *data, size_t len, on_send_cb on_send);
+
+void http_send_file_chunks(http_ctx_t *ctx);
 
 void http_close(http_ctx_t *hc);
 

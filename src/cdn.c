@@ -103,6 +103,42 @@ int http_send_data(http_ctx_t *ctx, char *data, size_t len) {
     return client_send_data(ctx->client, data, len, NULL);
 }
 
+int http_send_partial_data(http_ctx_t *ctx, char *data, size_t len, on_send_cb on_send) {
+    return client_send_data(ctx->client, data, len, on_send);
+}
+
+void on_file_chunk_sent (any_t a, send_info_t info) {
+    unused(info);
+
+    Client *client = (Client *) a;
+    http_ctx_t *ctx = (http_ctx_t *) client->data;
+    if (ctx->body_sent == ctx->file->available) {
+        fs_file_free(ctx->file);
+        http_close(ctx);
+        return;
+    }
+    http_send_file_chunks(ctx);
+}
+
+void http_send_file_chunks(http_ctx_t *ctx) {
+    char buffer[BUFFER_SIZE];
+    size_t left = ctx->file->available - ctx->body_sent;
+    size_t buf_size;
+    if (left < (buf_size = BUFFER_SIZE)) {
+        buf_size = left;
+    }
+
+    size_t read = fread(buffer, 1, buf_size, ctx->file->fd);
+    if (read == 0) {
+        fs_file_free(ctx->file);
+        http_close(ctx);
+        return;
+    }
+
+    ctx->body_sent += read;
+    http_send_partial_data(ctx, buffer, read, on_file_chunk_sent);
+}
+
 void http_send_response_headers(http_ctx_t *ctx, HTTPObject *rsp) {
     char *raw_rsp = http_raw(rsp);
     client_send_data(ctx->client, raw_rsp, strlen(raw_rsp), NULL);
@@ -148,7 +184,7 @@ void http_handle_get(http_ctx_t *ctx) {
     read_options_t opts = {
         .offset = ctx->request->range.offset,
         .limit = ctx->request->range.limit,
-        .max_chunk_size = BUFFER_SIZE
+        .max_chunk_size = MEDIA_MAX_SIZE
     };
 
     File *file = NULL;
@@ -180,8 +216,8 @@ void http_handle_get(http_ctx_t *ctx) {
     http_header_set(rsp, strdup(HTTP_HEADER_ACCEPT_RANGES), strdup(HTTP_HEADER_ACCEPT_RANGES_BYTES_VALUE));
     http_send_response_headers(ctx, rsp);
 
-    size_t left = file->available;
-    char buffer[BUFFER_SIZE];
+    /*
+     char buffer[BUFFER_SIZE];
     size_t read, buf_size;
     while(left > 0) {
         if (left < (buf_size = BUFFER_SIZE)) {
@@ -201,6 +237,10 @@ void http_handle_get(http_ctx_t *ctx) {
 
     fs_file_free(file);
     http_close(ctx);
+     * */
+    ctx->body_sent = 0;
+    ctx->file = file;
+    http_send_file_chunks(ctx);
 }
 
 void http_handle_put(http_ctx_t *hc, const char *chunk, size_t len) {
